@@ -13,7 +13,8 @@ This is **not** an indoor navigation client. Its only job is to produce clean gr
 | **Image** | Open PNG/JPG floor plans as canvas background |
 | **Canvas** | Infinite canvas, zoom (wheel / Ctrl+wheel), pan (middle mouse, Space, Pan tool), fit to screen |
 | **Nodes** | Create, move, delete, rename, multi-select · types: NORMAL, ROOM, ELEVATOR, STAIR, ENTRANCE, EXIT |
-| **Edges** | Connect two nodes · Euclidean distance · NORMAL / STAIR / ELEVATOR · bi-directional or one-way |
+| **Edges** | First-class objects: editable id, endpoints, type, weight, direction, metadata · same-floor **or cross-floor** · 8 types (Normal, Elevator, Stairs, Escalator, Bridge, Tunnel, Outdoor, Custom) |
+| **Navigation** | Node **Connections** list and edge **Go to source / destination** jump across floors and buildings, IDE-style |
 | **Buildings** | Unlimited buildings — add, rename, describe, duplicate, delete, reorder |
 | **Floors** | Unlimited floors per building — add, rename, delete, reorder · each with own image, nodes, edges, origin (0,0) top-left |
 | **Project** | `.mapeditor` format · open / save / save as · auto-save |
@@ -30,16 +31,33 @@ Project hierarchy:
 Project
 ├── Buildings
 │   ├── Building A
-│   │   ├── Floor 1   (image · nodes · edges · metadata)
+│   │   ├── Floor 1   (image · nodes · metadata)
 │   │   └── Floor 2
 │   └── Building B
 │       └── Floor 1
+├── Edges            ← the graph layer, spans all floors and buildings
 └── Metadata
 ```
 
-Nodes and edges are scoped to a floor. Floor ids are unique across the whole
-project, so a floor is addressable on its own regardless of which building
-owns it.
+**Floors own nodes; the project owns edges.** An edge may connect nodes on the
+same floor, on different floors, or in different buildings — so it belongs to
+no single floor. Floor ids are unique project-wide and node ids are unique
+project-wide, which is what lets an edge address its endpoints by id alone.
+
+### Cross-floor edges
+
+Each floor has its own coordinate space, so a line between floors would be
+meaningless. Cross-floor edges are therefore **never drawn**. Instead:
+
+- both endpoint nodes show a compact `⇅n` badge on the canvas
+- the node's **Connections** panel lists each one with its destination
+  building, floor, node and edge type
+- clicking a connection switches building and floor, selects the target node
+  and centres the viewport on it
+- `distance` is `0` for a cross-floor edge — use `weight` for routing cost
+
+To draw one: pick the Add Edge tool, click the source node, switch floor or
+building, then click the destination. The half-drawn edge survives the switch.
 
 ---
 
@@ -65,7 +83,7 @@ map_editor/
 │   ├── hooks/          # Shortcuts, autosave, menu bridge
 │   ├── models/         # Domain types
 │   ├── pages/          # Editor page
-│   ├── services/       # Graph, building, project, export, history, files
+│   ├── services/       # Graph, navigation, building, project, export, history, files
 │   ├── store/          # Zustand store
 │   ├── theme/          # MUI dark theme
 │   └── utils/          # Geometry, ids, constants
@@ -143,8 +161,9 @@ npm run electron:build:dir
 3. **Load floor plan image** (PNG/JPG) for the selected floor
 4. **Add Node** tool — click on corridors / rooms
 5. Set node **type** and **label** in the properties panel
-6. **Add Edge** tool — click node A, then node B
-7. Distances are calculated automatically (pixel Euclidean)
+6. **Add Edge** tool — click node A, then node B (switch floor in between for a
+   cross-floor link); set type, weight and direction in the dialog
+7. Same-floor distances are calculated automatically (pixel Euclidean)
 8. Add / switch floors and buildings in the left panel, repeat
 9. **Save** project · **Export JSON** for the pathfinding backend
 
@@ -181,7 +200,7 @@ Custom JSON document embedding floor images as data URLs:
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "name": "Hospital A",
   "createdAt": "...",
   "updatedAt": "...",
@@ -214,19 +233,21 @@ Custom JSON document embedding floor images as data URLs:
               "properties": { "capacity": 12 },
               "propertySchema": { "capacity": { "type": "number" } }
             }
-          ],
-          "edges": [
-            {
-              "id": "e_def456",
-              "from": "n_abc123",
-              "to": "n_xyz789",
-              "distance": 85.42,
-              "edgeType": "NORMAL",
-              "bidirectional": true
-            }
           ]
         }
       ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_def456",
+      "from": "n_abc123",
+      "to": "n_xyz789",
+      "distance": 85.42,
+      "weight": 1,
+      "edgeType": "NORMAL",
+      "bidirectional": true,
+      "metadata": {}
     }
   ],
   "metadata": {}
@@ -235,9 +256,14 @@ Custom JSON document embedding floor images as data URLs:
 
 Coordinates are **image pixels**, origin **(0,0) top-left**, independent per floor.
 
-**Version 1 files still open.** A v1 document stores floors directly on the
-project; on load every floor is moved into a default building named
-`Main Building`, ids are left untouched, and nothing is dropped.
+`distance` is the auto-maintained pixel length (0 across floors); `weight` is
+the routing cost and is only ever what you set it to.
+
+**Version 1 and 2 files still open.** A v1 document stores floors directly on
+the project; on load every floor is moved into a default building named
+`Main Building`. A v1 or v2 document stores edges inside each floor; on load
+they are hoisted to the project-level `edges` array and given `weight: 1`. Ids
+are left untouched and nothing is dropped.
 
 **Unknown fields are preserved.** Any key the editor does not recognise — on
 the project, a building, a floor, a node or an edge — round-trips through
@@ -256,8 +282,10 @@ The toolbar's `{ }` button opens the whole project document for editing.
 - Applying pushes an undo entry — `Ctrl+Z` steps back out of a JSON edit
 
 Beyond syntax, the document must satisfy the project invariants: building ids
-unique, floor ids unique across all buildings, and every building holding at
-least one floor. Violations are reported and the edit is kept open.
+unique, floor ids unique across all buildings, **node ids unique project-wide**,
+edge ids unique, every edge endpoint resolving to a real node, and every
+building holding at least one floor. Violations are reported and the edit is
+kept open.
 
 ---
 
@@ -288,37 +316,57 @@ least one floor. Violations are reported and the edit is kept open.
               "properties": { "capacity": 12 }
             }
           ],
-          "edges": [
-            {
-              "from": "n_abc123",
-              "to": "n_xyz789",
-              "distance": 85.42,
-              "edgeType": "NORMAL",
-              "bidirectional": true
-            }
-          ]
+          "edges": [ "…same-floor edges only, see note below…" ]
         }
       ]
     }
   ],
-  "floors": [ "…every floor across every building, same objects as above…" ]
+  "floors": [ "…every floor across every building, same objects as above…" ],
+  "edges": [
+    {
+      "id": "e_def456",
+      "from": "n_abc123",
+      "to": "n_xyz789",
+      "fromBuilding": 1,
+      "fromFloor": 1,
+      "toBuilding": 1,
+      "toFloor": 2,
+      "distance": 0,
+      "weight": 5,
+      "edgeType": "ELEVATOR",
+      "bidirectional": true,
+      "crossFloor": true,
+      "metadata": {}
+    }
+  ]
 }
 ```
 
 Feed this into your backend pathfinding service (Dijkstra / A\*).
 
-The top-level `floors` array is a **flat mirror** of every floor in the
-project, kept so consumers written against the previous single-building export
-keep working unchanged. Floor ids are unique project-wide, so the flat view is
-never ambiguous. New consumers should read `buildings` and can ignore `floors`.
+Three views of the same data, for compatibility:
+
+| Key | Contents |
+|-----|----------|
+| `buildings` | The hierarchy. Preferred for new consumers. |
+| `floors` | Flat mirror of every floor. Kept for pre-buildings consumers. |
+| `edges` | **Authoritative edge list** — every edge, same-floor and cross-floor, with both endpoints resolved to a building and floor. |
+
+> **Important for pathfinding backends:** the per-floor `edges` arrays contain
+> only **same-floor** edges, because a cross-floor edge belongs to no single
+> floor. Read the top-level `edges` array to get the complete graph. A backend
+> that only reads `floors[].edges` will silently miss every elevator, stair and
+> bridge connection between floors.
 
 ---
 
 ## Architecture notes
 
-- **Clean separation**: graph mutations (nodes/edges on a floor) live in `services/graphService.ts`; building and floor structure lives in `services/buildingService.ts`; document concerns (create / clone / serialize / parse / migrate) live in `services/projectService.ts`. The Zustand store orchestrates UI state + history.
-- **Layering**: `buildingService` knows nothing about the project document, and `graphService` knows nothing about buildings — so a floor's graph logic is untouched by the hierarchy above it.
-- **History**: snapshots of buildings + active building/floor + selection for undo/redo (limit 100).
+- **Visual layer vs graph layer.** The canvas renders exactly one floor and only ever receives edges whose endpoints both live on it (`getFloorEdges`). It cannot draw a cross-floor line because it is never handed one. The graph layer (`project.edges` + `services/navigationService.ts`) holds the complete navigation graph across every building and floor, and answers the cross-floor questions the canvas surfaces as badges.
+- **Clean separation**: node mutations on a floor and edge mutations on an edge list live in `services/graphService.ts`; building and floor structure lives in `services/buildingService.ts`; cross-floor queries live in `services/navigationService.ts`; document concerns (create / clone / serialize / parse / migrate) live in `services/projectService.ts`. The Zustand store orchestrates UI state + history.
+- **Layering**: `buildingService` knows nothing about the project document, and `graphService` knows nothing about buildings or the project — edge operations take an `EdgeEndpointLocator` callback so they stay project-agnostic. `projectService` is the only module that wires them together.
+- **History**: snapshots of buildings + edges + active building/floor + selection for undo/redo (limit 100).
+- **Cascade integrity**: deleting a node, floor or building removes every edge that reached into it, from anywhere in the project — one filter over the project edge list rather than a scan of every floor.
 - **Auto-save**: every 30s to disk (when path known) + `localStorage` recovery snapshot.
 - **Canvas**: Konva Layer transform for pan/zoom; hit-testing in world (pixel) space.
 

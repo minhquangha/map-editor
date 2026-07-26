@@ -8,6 +8,7 @@ import type {
   Floor,
   HistorySnapshot,
   MapEditorProject,
+  Metadata,
   NodeType,
   SelectionState,
   Viewport,
@@ -21,33 +22,44 @@ import {
   getActiveFloor,
   normalizeActive,
   parseProject,
+  createEdgeInProject,
+  deleteEdgesInProject,
+  deleteNodesInProject,
+  moveNodesInProject,
   removeBuildingFromProject,
   removeFloorFromProject,
+  renameEdgeIdInProject,
+  renameNodeIdInProject,
   reorderBuildingInProject,
   reorderFloorInProject,
   serializeProject,
   setActiveBuildingInProject,
   setActiveFloorInProject,
+  setEdgeEndpointsInProject,
   updateBuildingInProject,
+  updateEdgeInProject,
   updateFloorInProject,
+  updateNodeInProject,
 } from '@/services/projectService';
-import { cloneBuildings, findFloorLocation } from '@/services/buildingService';
+import {
+  cloneBuildings,
+  cloneEdges,
+  findFloorLocation,
+} from '@/services/buildingService';
 import {
   addNodePropertyOnFloor,
   addNodeToFloor,
-  createEdgeOnFloor,
-  deleteEdgesFromFloor,
   deleteNodePropertyOnFloor,
-  deleteNodesFromFloor,
-  moveNodesOnFloor,
-  renameNodeIdOnFloor,
   renameNodePropertyOnFloor,
   setNodePropertySchemaOnFloor,
   setNodePropertyValueOnFloor,
-  updateEdgeOnFloor,
-  updateNodeOnFloor,
   validateNodeId,
 } from '@/services/graphService';
+import {
+  buildNodeIndex,
+  collectNodeIds,
+  getFloorEdges,
+} from '@/services/navigationService';
 import {
   canRedo,
   canUndo,
@@ -73,6 +85,15 @@ export interface EditorStatus {
   severity: 'info' | 'success' | 'warning' | 'error';
 }
 
+/** Editable edge fields. `distance` stays auto-maintained for same-floor edges. */
+export type EdgePatch = Partial<{
+  edgeType: EdgeType;
+  bidirectional: boolean;
+  distance: number;
+  weight: number;
+  metadata: Metadata;
+}>;
+
 interface EditorState {
   project: MapEditorProject;
   projectPath: string | null;
@@ -83,8 +104,16 @@ interface EditorState {
   viewport: Viewport;
   stageSize: { width: number; height: number };
   history: HistoryState;
-  /** First node id when creating an edge (click A then B). */
+  /**
+   * First node id when creating an edge (click A then B).
+   * Survives floor and building switches so cross-floor edges can be drawn.
+   */
   edgeDraftFromId: string | null;
+  /**
+   * Endpoints chosen but not yet committed — the Edge Properties dialog is
+   * open. Nothing is written to the graph until it is confirmed.
+   */
+  pendingEdge: { fromId: string; toId: string } | null;
   status: EditorStatus | null;
   showNodeLabels: boolean;
   showDistances: boolean;
@@ -187,14 +216,32 @@ interface EditorState {
   /** Live move without history (during drag). */
   moveNodesLive: (nodeIds: string[], dx: number, dy: number) => void;
   deleteSelection: () => void;
+
+  // ── Edges ────────────────────────────────────────────────────────────────
+  /** Stage an edge between two nodes; opens the Edge Properties dialog. */
   connectEdge: (fromId: string, toId: string) => void;
-  updateSelectedEdge: (
-    patch: Partial<{ edgeType: EdgeType; bidirectional: boolean; distance: number }>
-  ) => void;
-  updateEdge: (
-    edgeId: string,
-    patch: Partial<{ edgeType: EdgeType; bidirectional: boolean; distance: number }>
-  ) => void;
+  /** Commit the staged edge with the settings chosen in the dialog. */
+  confirmPendingEdge: (settings: {
+    edgeType: EdgeType;
+    weight: number;
+    bidirectional: boolean;
+  }) => void;
+  cancelPendingEdge: () => void;
+  updateSelectedEdge: (patch: EdgePatch) => void;
+  updateEdge: (edgeId: string, patch: EdgePatch) => void;
+  /** Rename an edge id. Throws on blank or colliding ids. */
+  renameEdgeId: (oldId: string, newId: string) => void;
+  /** Repoint an edge at different endpoints (may cross floors). */
+  setEdgeEndpoints: (edgeId: string, fromId: string, toId: string) => void;
+
+  // ── Cross-floor navigation ───────────────────────────────────────────────
+  /**
+   * Jump to a node anywhere in the project: switches building and floor,
+   * selects it and centres the viewport on it.
+   */
+  goToNode: (nodeId: string) => void;
+  /** Jump to an edge and select it, switching to its source floor. */
+  goToEdge: (edgeId: string) => void;
 
   // ── Custom node properties ───────────────────────────────────────────────
   addNodeProperty: (
@@ -225,6 +272,7 @@ function restoreSnapshot(
   return normalizeActive({
     ...project,
     buildings: cloneBuildings(snapshot.buildings),
+    edges: cloneEdges(snapshot.edges),
     activeBuildingId: snapshot.activeBuildingId,
     activeFloorId: snapshot.activeFloorId,
   });
@@ -241,6 +289,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   stageSize: { width: 800, height: 600 },
   history: createEmptyHistory(),
   edgeDraftFromId: null,
+  pendingEdge: null,
   status: { message: 'Ready — open a floor plan image to begin.', severity: 'info' },
   showNodeLabels: true,
   showDistances: false,
@@ -325,11 +374,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   clearSelection: () => set({ selection: emptySelection(), edgeDraftFromId: null }),
 
   selectAll: () => {
-    const floor = get().getActiveFloor();
+    const { project } = get();
+    const floor = getActiveFloor(project);
     set({
       selection: {
         nodeIds: floor.nodes.map((n) => n.id),
-        edgeIds: floor.edges.map((e) => e.id),
+        // Only edges drawn on this floor — cross-floor edges are not visible
+        // here, so selecting them would be invisible and surprising.
+        edgeIds: getFloorEdges(project.edges, floor).map((e) => e.id),
       },
     });
   },
@@ -338,6 +390,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const { project, selection, history } = get();
     const snapshot = createSnapshot(
       project.buildings,
+      project.edges,
       project.activeBuildingId,
       project.activeFloorId,
       selection
@@ -349,6 +402,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const { history, project, selection } = get();
     const current = createSnapshot(
       project.buildings,
+      project.edges,
       project.activeBuildingId,
       project.activeFloorId,
       selection
@@ -369,6 +423,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const { history, project, selection } = get();
     const current = createSnapshot(
       project.buildings,
+      project.edges,
       project.activeBuildingId,
       project.activeFloorId,
       selection
@@ -529,7 +584,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => ({
       project: setActiveBuildingInProject(s.project, buildingId),
       selection: emptySelection(),
-      edgeDraftFromId: null,
+      // Keep a half-drawn edge alive across the switch — that is how a
+      // cross-building edge gets drawn.
+      edgeDraftFromId: s.tool === 'add-edge' ? s.edgeDraftFromId : null,
     }));
     setTimeout(() => get().fitToScreen(), 30);
   },
@@ -645,7 +702,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => ({
       project: setActiveFloorInProject(s.project, floorId),
       selection: emptySelection(),
-      edgeDraftFromId: null,
+      // Keep a half-drawn edge alive across the switch — that is how a
+      // cross-floor edge gets drawn.
+      edgeDraftFromId: s.tool === 'add-edge' ? s.edgeDraftFromId : null,
     }));
     setTimeout(() => get().fitToScreen(), 30);
   },
@@ -802,9 +861,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     get().commitHistory();
     const floorId = get().project.activeFloorId;
     set((s) => ({
-      project: updateFloorInProject(s.project, floorId, (f) =>
-        updateNodeOnFloor(f, nodeId, patch)
-      ),
+      project: updateNodeInProject(s.project, floorId, nodeId, patch),
       isDirty: true,
     }));
   },
@@ -819,9 +876,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const floor = get().getActiveFloor();
 
     // Validate before touching history so failed renames cannot pollute undo.
-    const validationError = validateNodeId(floor, trimmed, {
-      excludeId: oldId,
-    });
+    // Scope is project-wide: edges reference nodes by id alone.
+    const validationError = validateNodeId(
+      collectNodeIds(get().project),
+      trimmed,
+      { excludeId: oldId }
+    );
     if (validationError) {
       set({
         status: { message: validationError, severity: 'error' },
@@ -834,10 +894,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       throw new Error(message);
     }
 
-    // Apply pure graph transform first; only then commit one undo snapshot.
-    let nextFloor;
+    // Apply the transform first — renaming rewrites every edge endpoint that
+    // referenced the old id — and only then commit one undo snapshot.
+    let nextProject;
     try {
-      nextFloor = renameNodeIdOnFloor(floor, oldId, trimmed);
+      nextProject = renameNodeIdInProject(
+        get().project,
+        floorId,
+        oldId,
+        trimmed
+      );
     } catch (err) {
       set({
         status: {
@@ -848,31 +914,23 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       throw err;
     }
 
-    if (nextFloor === floor) {
-      return;
-    }
-
     get().commitHistory();
-    set((s) => {
-      const selection: SelectionState = {
+    set((s) => ({
+      project: nextProject,
+      selection: {
         nodeIds: s.selection.nodeIds.map((id) =>
           id === oldId ? trimmed : id
         ),
         edgeIds: s.selection.edgeIds,
-      };
-      const edgeDraftFromId =
-        s.edgeDraftFromId === oldId ? trimmed : s.edgeDraftFromId;
-      return {
-        project: updateFloorInProject(s.project, floorId, () => nextFloor),
-        selection,
-        edgeDraftFromId,
-        isDirty: true,
-        status: {
-          message: `Node ID renamed: ${oldId} → ${trimmed}`,
-          severity: 'success',
-        },
-      };
-    });
+      },
+      edgeDraftFromId:
+        s.edgeDraftFromId === oldId ? trimmed : s.edgeDraftFromId,
+      isDirty: true,
+      status: {
+        message: `Node ID renamed: ${oldId} → ${trimmed}`,
+        severity: 'success',
+      },
+    }));
   },
 
   moveSelectedNodes: (dx, dy) => {
@@ -881,9 +939,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     get().commitHistory();
     const floorId = get().project.activeFloorId;
     set((s) => ({
-      project: updateFloorInProject(s.project, floorId, (f) =>
-        moveNodesOnFloor(f, ids, dx, dy)
-      ),
+      project: moveNodesInProject(s.project, floorId, ids, dx, dy),
       isDirty: true,
     }));
   },
@@ -892,9 +948,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     if (nodeIds.length === 0) return;
     const floorId = get().project.activeFloorId;
     set((s) => ({
-      project: updateFloorInProject(s.project, floorId, (f) =>
-        moveNodesOnFloor(f, nodeIds, dx, dy)
-      ),
+      project: moveNodesInProject(s.project, floorId, nodeIds, dx, dy),
       isDirty: true,
     }));
   },
@@ -909,14 +963,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => {
       let project = s.project;
       if (selection.nodeIds.length > 0) {
-        project = updateFloorInProject(project, floorId, (f) =>
-          deleteNodesFromFloor(f, selection.nodeIds)
-        );
+        // Also drops every edge touching them, wherever it originates.
+        project = deleteNodesInProject(project, floorId, selection.nodeIds);
       }
       if (selection.edgeIds.length > 0) {
-        project = updateFloorInProject(project, floorId, (f) =>
-          deleteEdgesFromFloor(f, selection.edgeIds)
-        );
+        project = deleteEdgesInProject(project, selection.edgeIds);
       }
       return {
         project,
@@ -928,26 +979,58 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   connectEdge: (fromId, toId) => {
+    const { project } = get();
+
+    // Validate up front so the dialog never opens on an impossible edge.
+    if (fromId === toId) {
+      set({
+        edgeDraftFromId: null,
+        status: {
+          message: 'Cannot create an edge from a node to itself.',
+          severity: 'warning',
+        },
+      });
+      return;
+    }
+    if (project.edges.some((e) => e.from === fromId && e.to === toId)) {
+      set({
+        edgeDraftFromId: null,
+        status: {
+          message: 'Edge already exists between these nodes.',
+          severity: 'warning',
+        },
+      });
+      return;
+    }
+
+    set({ pendingEdge: { fromId, toId } });
+  },
+
+  confirmPendingEdge: (settings) => {
+    const pending = get().pendingEdge;
+    if (!pending) return;
+
     try {
       get().commitHistory();
-      const floorId = get().project.activeFloorId;
-      let newEdgeId = '';
-      set((s) => {
-        const project = updateFloorInProject(s.project, floorId, (f) => {
-          const next = createEdgeOnFloor(f, { from: fromId, to: toId });
-          newEdgeId = next.edges[next.edges.length - 1].id;
-          return next;
-        });
-        return {
-          project,
-          isDirty: true,
-          edgeDraftFromId: null,
-          selection: { nodeIds: [], edgeIds: [newEdgeId] },
-          status: { message: 'Edge created', severity: 'success' },
-        };
+      const project = createEdgeInProject(get().project, {
+        from: pending.fromId,
+        to: pending.toId,
+        edgeType: settings.edgeType,
+        weight: settings.weight,
+        bidirectional: settings.bidirectional,
+      });
+      const created = project.edges[project.edges.length - 1];
+      set({
+        project,
+        isDirty: true,
+        pendingEdge: null,
+        edgeDraftFromId: null,
+        selection: { nodeIds: [], edgeIds: [created.id] },
+        status: { message: 'Edge created', severity: 'success' },
       });
     } catch (err) {
       set({
+        pendingEdge: null,
         edgeDraftFromId: null,
         status: {
           message: err instanceof Error ? err.message : 'Cannot create edge',
@@ -957,6 +1040,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }
   },
 
+  cancelPendingEdge: () =>
+    set({
+      pendingEdge: null,
+      edgeDraftFromId: null,
+      status: { message: 'Edge creation cancelled', severity: 'info' },
+    }),
+
   updateSelectedEdge: (patch) => {
     const { selection } = get();
     if (selection.edgeIds.length !== 1) return;
@@ -965,13 +1055,99 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   updateEdge: (edgeId, patch) => {
     get().commitHistory();
-    const floorId = get().project.activeFloorId;
     set((s) => ({
-      project: updateFloorInProject(s.project, floorId, (f) =>
-        updateEdgeOnFloor(f, edgeId, patch)
-      ),
+      project: updateEdgeInProject(s.project, edgeId, patch),
       isDirty: true,
     }));
+  },
+
+  renameEdgeId: (oldId, newId) => {
+    const trimmed = newId.trim();
+    if (trimmed === oldId) return;
+
+    // Validate before touching history so failed renames cannot pollute undo.
+    let next;
+    try {
+      next = renameEdgeIdInProject(get().project, oldId, trimmed);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Cannot rename edge ID';
+      set({ status: { message, severity: 'error' } });
+      throw new Error(message);
+    }
+
+    get().commitHistory();
+    set((s) => ({
+      project: next,
+      selection: {
+        nodeIds: s.selection.nodeIds,
+        edgeIds: s.selection.edgeIds.map((id) =>
+          id === oldId ? trimmed : id
+        ),
+      },
+      isDirty: true,
+      status: {
+        message: `Edge ID renamed: ${oldId} → ${trimmed}`,
+        severity: 'success',
+      },
+    }));
+  },
+
+  setEdgeEndpoints: (edgeId, fromId, toId) => {
+    let next;
+    try {
+      next = setEdgeEndpointsInProject(get().project, edgeId, fromId, toId);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Cannot change endpoints';
+      set({ status: { message, severity: 'error' } });
+      throw new Error(message);
+    }
+
+    get().commitHistory();
+    set({ project: next, isDirty: true });
+  },
+
+  goToNode: (nodeId) => {
+    const { project, stageSize, viewport } = get();
+    const location = buildNodeIndex(project).get(nodeId);
+    if (!location) {
+      set({
+        status: { message: `Node "${nodeId}" not found.`, severity: 'warning' },
+      });
+      return;
+    }
+
+    const { node, floor, building } = location;
+    set({
+      project: {
+        ...project,
+        activeBuildingId: building.id,
+        activeFloorId: floor.id,
+      },
+      selection: { nodeIds: [node.id], edgeIds: [] },
+      edgeDraftFromId: null,
+      // Centre on the node, holding the current zoom.
+      viewport: {
+        scale: viewport.scale,
+        x: stageSize.width / 2 - node.x * viewport.scale,
+        y: stageSize.height / 2 - node.y * viewport.scale,
+      },
+      status: {
+        message: `${building.name} · ${floor.name} — ${node.label || node.id}`,
+        severity: 'info',
+      },
+    });
+  },
+
+  goToEdge: (edgeId) => {
+    const { project } = get();
+    const edge = project.edges.find((e) => e.id === edgeId);
+    if (!edge) return;
+
+    // Land on the source endpoint, then highlight the edge itself.
+    get().goToNode(edge.from);
+    set({ selection: { nodeIds: [], edgeIds: [edgeId] } });
   },
 
   addNodeProperty: (nodeId, key, type, options) => {

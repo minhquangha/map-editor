@@ -10,6 +10,8 @@ export type {
   Building,
   Metadata,
   ProjectMetadata,
+  NodeLocation,
+  NodeConnection,
   MapEditorProject,
   ExportGraph,
   ExportBuilding,

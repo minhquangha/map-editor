@@ -18,6 +18,10 @@ import {
   getNodesInRect,
 } from '@/services/graphService';
 import { getActiveFloor } from '@/services/projectService';
+import {
+  getCrossFloorCounts,
+  getFloorEdges,
+} from '@/services/navigationService';
 import { screenToWorld, zoomAtPoint } from '@/utils/geometry';
 import { WHEEL_ZOOM_SENSITIVITY } from '@/utils/constants';
 
@@ -73,6 +77,21 @@ export function EditorCanvas() {
   const setStatus = useEditorStore((s) => s.setStatus);
 
   const floor = useMemo(() => getActiveFloor(project), [project]);
+
+  /**
+   * Visual layer boundary: the canvas only ever sees edges whose endpoints
+   * both live on the active floor. Cross-floor edges stay in the graph layer
+   * and surface as node badges instead of lines.
+   */
+  const floorEdges = useMemo(
+    () => getFloorEdges(project.edges, floor),
+    [project.edges, floor]
+  );
+
+  const crossFloorCounts = useMemo(
+    () => getCrossFloorCounts(project.edges, floor),
+    [project.edges, floor]
+  );
 
   const selectedNodeIds = useMemo(
     () => new Set(selection.nodeIds),
@@ -209,9 +228,12 @@ export function EditorCanvas() {
       const world = getPointerWorld();
       if (!world) return;
 
-      const currentTool = useEditorStore.getState().tool;
-      const currentFloor = useEditorStore.getState().getActiveFloor();
-      const hitR = worldHitRadius(useEditorStore.getState().viewport.scale);
+      const state = useEditorStore.getState();
+      const currentTool = state.tool;
+      const currentFloor = state.getActiveFloor();
+      // Hit-testing only ever considers edges drawn on this floor.
+      const currentEdges = getFloorEdges(state.project.edges, currentFloor);
+      const hitR = worldHitRadius(state.viewport.scale);
 
       if (currentTool === 'add-node') {
         addNodeAt(world.x, world.y);
@@ -245,7 +267,13 @@ export function EditorCanvas() {
           requestAnimationFrame(() => deleteSelection());
           return;
         }
-        const edge = findEdgeAt(currentFloor, world.x, world.y, hitR);
+        const edge = findEdgeAt(
+          currentFloor.nodes,
+          currentEdges,
+          world.x,
+          world.y,
+          hitR
+        );
         if (edge) {
           selectEdges([edge.id]);
           requestAnimationFrame(() => deleteSelection());
@@ -258,7 +286,13 @@ export function EditorCanvas() {
         const node = findNodeAt(currentFloor, world.x, world.y, hitR);
         if (node) return;
 
-        const edge = findEdgeAt(currentFloor, world.x, world.y, hitR);
+        const edge = findEdgeAt(
+          currentFloor.nodes,
+          currentEdges,
+          world.x,
+          world.y,
+          hitR
+        );
         if (edge) {
           selectEdges(
             [edge.id],
@@ -365,7 +399,8 @@ export function EditorCanvas() {
           setEdgeDraftFromId(nodeId);
           selectNodes([nodeId]);
           setStatus({
-            message: 'Select the second node to connect',
+            message:
+              'Select the second node — switch floor or building first for a cross-floor edge',
             severity: 'info',
           });
         } else if (draft !== nodeId) {
@@ -462,8 +497,14 @@ export function EditorCanvas() {
           ? 'not-allowed'
           : 'default';
 
+  // Only preview when the draft's source node is on the floor being shown —
+  // after switching floors there is nothing here to draw the rubber band from.
+  const draftIsOnThisFloor =
+    edgeDraftFromId !== null &&
+    floor.nodes.some((n) => n.id === edgeDraftFromId);
+
   const preview =
-    edgeDraftFromId && cursorWorld
+    draftIsOnThisFloor && edgeDraftFromId && cursorWorld
       ? { fromId: edgeDraftFromId, toX: cursorWorld.x, toY: cursorWorld.y }
       : null;
 
@@ -514,7 +555,7 @@ export function EditorCanvas() {
 
           <EdgeLayer
             nodes={floor.nodes}
-            edges={floor.edges}
+            edges={floorEdges}
             selectedEdgeIds={selectedEdgeIds}
             showDistances={showDistances}
             scale={viewport.scale}
@@ -525,6 +566,7 @@ export function EditorCanvas() {
           <NodeLayer
             nodes={floor.nodes}
             selectedNodeIds={selectedNodeIds}
+            crossFloorCounts={crossFloorCounts}
             showLabels={showNodeLabels}
             scale={viewport.scale}
             draggable={nodesDraggable}

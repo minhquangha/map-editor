@@ -3,6 +3,7 @@ import { useMemo } from 'react';
 import { useEditorStore } from '@/store/useEditorStore';
 import { getProjectStats } from '@/services/exportService';
 import { getActiveBuilding, getActiveFloor } from '@/services/projectService';
+import { getFloorEdges } from '@/services/navigationService';
 
 export function StatusBar() {
   const project = useEditorStore((s) => s.project);
@@ -15,6 +16,11 @@ export function StatusBar() {
 
   const building = useMemo(() => getActiveBuilding(project), [project]);
   const floor = useMemo(() => getActiveFloor(project), [project]);
+
+  const floorEdgeCount = useMemo(
+    () => getFloorEdges(project.edges, floor).length,
+    [project.edges, floor]
+  );
 
   const stats = useMemo(() => getProjectStats(project), [project]);
 
@@ -55,12 +61,13 @@ export function StatusBar() {
       </Typography>
 
       <Typography variant="caption" color="text.secondary">
-        Nodes {floor.nodes.length} · Edges {floor.edges.length}
+        Nodes {floor.nodes.length} · Edges {floorEdgeCount}
       </Typography>
 
       <Typography variant="caption" color="text.secondary">
-        Project {stats.nodes}n / {stats.edges}e · {stats.buildings} bld /{' '}
-        {stats.floors} floors
+        Project {stats.nodes}n / {stats.edges}e
+        {stats.crossFloorEdges > 0 && ` (${stats.crossFloorEdges} cross-floor)`}{' '}
+        · {stats.buildings} bld / {stats.floors} floors
       </Typography>
 
       {(selection.nodeIds.length > 0 || selection.edgeIds.length > 0) && (

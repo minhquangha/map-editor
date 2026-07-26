@@ -1,16 +1,20 @@
 import {
+  Alert,
   Box,
   Divider,
   FormControl,
   FormControlLabel,
+  IconButton,
   InputLabel,
   MenuItem,
   Select,
   Stack,
   Switch,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
+import MyLocationIcon from '@mui/icons-material/MyLocation';
 import { useEffect, useMemo, useState } from 'react';
 import { useEditorStore } from '@/store/useEditorStore';
 import type {
@@ -20,12 +24,19 @@ import type {
   Floor,
   GraphEdge,
   GraphNode,
+  NodeLocation,
   NodeType,
 } from '@/models/types';
 import { validateNodeId } from '@/services/graphService';
 import { getActiveFloor } from '@/services/projectService';
+import {
+  buildNodeIndex,
+  collectNodeIds,
+} from '@/services/navigationService';
 import { EDGE_TYPE_OPTIONS, NODE_TYPE_OPTIONS } from '@/utils/constants';
+import { ConnectionsSection } from './ConnectionsSection';
 import { CustomPropertiesSection } from './CustomPropertiesSection';
+import { MetadataEditor } from './MetadataEditor';
 
 export function PropertiesPanel() {
   const project = useEditorStore((s) => s.project);
@@ -49,9 +60,10 @@ export function PropertiesPanel() {
     [floor.nodes, selection.nodeIds]
   );
 
+  // Edges live on the project, so a selected edge may reach off this floor.
   const selectedEdges = useMemo(
-    () => floor.edges.filter((e) => selection.edgeIds.includes(e.id)),
-    [floor.edges, selection.edgeIds]
+    () => project.edges.filter((e) => selection.edgeIds.includes(e.id)),
+    [project.edges, selection.edgeIds]
   );
 
   if (selectedNodes.length === 1 && selectedEdges.length === 0) {
@@ -80,13 +92,7 @@ export function PropertiesPanel() {
   }
 
   if (selectedEdges.length === 1 && selectedNodes.length === 0) {
-    return (
-      <EdgeProperties
-        edge={selectedEdges[0]}
-        floorNodes={floor.nodes}
-        onUpdate={(patch) => updateEdge(selectedEdges[0].id, patch)}
-      />
-    );
+    return <EdgeProperties edge={selectedEdges[0]} />;
   }
 
   if (selectedNodes.length > 1) {
@@ -124,7 +130,13 @@ export function PropertiesPanel() {
       </Typography>
       <Typography variant="caption" color="text.secondary" component="div" sx={{ mt: 1 }}>
         <strong>Distance</strong> is Euclidean length in pixels and updates
-        automatically when endpoints move.
+        automatically when endpoints move. <strong>Weight</strong> is the
+        routing cost and is only ever what you set it to.
+      </Typography>
+      <Typography variant="caption" color="text.secondary" component="div" sx={{ mt: 1 }}>
+        Edges may connect nodes on <strong>different floors</strong>. Those are
+        not drawn on the canvas — the connected nodes carry a ⇅ badge, and the
+        node's <strong>Connections</strong> list jumps to the far end.
       </Typography>
       <Typography variant="caption" color="text.secondary" component="div" sx={{ mt: 1 }}>
         Nodes support unlimited <strong>custom properties</strong> (string,
@@ -163,6 +175,9 @@ function NodeProperties({
   onPropertyValue: (key: string, value: unknown) => void;
   onPropertySchema: (key: string, schema: CustomPropertySchema) => void;
 }) {
+  const project = useEditorStore((s) => s.project);
+  const allNodeIds = useMemo(() => collectNodeIds(project), [project]);
+
   const [idDraft, setIdDraft] = useState(node.id);
   const [idError, setIdError] = useState<string | null>(null);
   const [label, setLabel] = useState(node.label);
@@ -186,7 +201,10 @@ function NodeProperties({
       setIdError(null);
       return;
     }
-    const validationError = validateNodeId(floor, next, { excludeId: node.id });
+    // Node ids must be unique project-wide — edges address nodes by id alone.
+    const validationError = validateNodeId(allNodeIds, next, {
+      excludeId: node.id,
+    });
     if (validationError) {
       setIdError(validationError);
       setIdDraft(node.id);
@@ -314,6 +332,10 @@ function NodeProperties({
 
         <Divider sx={{ my: 0.5 }} />
 
+        <ConnectionsSection nodeId={node.id} />
+
+        <Divider sx={{ my: 0.5 }} />
+
         <CustomPropertiesSection
           node={node}
           onAdd={onAddProperty}
@@ -327,64 +349,97 @@ function NodeProperties({
   );
 }
 
-function EdgeProperties({
-  edge,
-  floorNodes,
-  onUpdate,
-}: {
-  edge: GraphEdge;
-  floorNodes: GraphNode[];
-  onUpdate: (
-    patch: Partial<{ edgeType: EdgeType; bidirectional: boolean; distance: number }>
-  ) => void;
-}) {
-  const fromNode = floorNodes.find((n) => n.id === edge.from);
-  const toNode = floorNodes.find((n) => n.id === edge.to);
+function EdgeProperties({ edge }: { edge: GraphEdge }) {
+  const project = useEditorStore((s) => s.project);
+  const updateEdge = useEditorStore((s) => s.updateEdge);
+  const renameEdgeId = useEditorStore((s) => s.renameEdgeId);
+  const goToNode = useEditorStore((s) => s.goToNode);
+
+  const [idDraft, setIdDraft] = useState(edge.id);
+  const [idError, setIdError] = useState<string | null>(null);
   const [distance, setDistance] = useState(String(edge.distance));
+  const [weight, setWeight] = useState(String(edge.weight));
+
+  const endpoints = useMemo(() => {
+    const index = buildNodeIndex(project);
+    return { from: index.get(edge.from), to: index.get(edge.to) };
+  }, [project, edge.from, edge.to]);
+
+  const crossFloor =
+    endpoints.from !== undefined &&
+    endpoints.to !== undefined &&
+    endpoints.from.floor.id !== endpoints.to.floor.id;
 
   useEffect(() => {
+    setIdDraft(edge.id);
+    setIdError(null);
     setDistance(String(edge.distance));
-  }, [edge.id, edge.distance]);
+    setWeight(String(edge.weight));
+  }, [edge.id, edge.distance, edge.weight]);
+
+  const commitId = () => {
+    const next = idDraft.trim();
+    if (next === edge.id) {
+      setIdDraft(edge.id);
+      setIdError(null);
+      return;
+    }
+    try {
+      renameEdgeId(edge.id, next);
+      setIdError(null);
+    } catch (err) {
+      setIdError(err instanceof Error ? err.message : 'Invalid edge ID');
+      setIdDraft(edge.id);
+    }
+  };
 
   return (
     <PanelShell title="Edge Properties">
       <Stack spacing={1.5}>
         <TextField
-          label="From"
-          value={fromNode?.label || edge.from}
-          InputProps={{ readOnly: true }}
+          label="ID"
+          value={idDraft}
           size="small"
-          helperText={edge.from}
-        />
-        <TextField
-          label="To"
-          value={toNode?.label || edge.to}
-          InputProps={{ readOnly: true }}
-          size="small"
-          helperText={edge.to}
-        />
-        <TextField
-          label="Distance (px)"
-          type="number"
-          value={distance}
-          onChange={(e) => setDistance(e.target.value)}
-          onBlur={() => {
-            const v = Number(distance);
-            if (Number.isFinite(v) && v !== edge.distance) onUpdate({ distance: v });
-            else setDistance(String(edge.distance));
+          fullWidth
+          error={Boolean(idError)}
+          helperText={idError ?? undefined}
+          onChange={(e) => {
+            setIdDraft(e.target.value);
+            if (idError) setIdError(null);
           }}
+          onBlur={commitId}
           onKeyDown={(e) => {
             if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
           }}
-          size="small"
-          helperText="Auto-updated when nodes move"
         />
+
+        {crossFloor && (
+          <Alert severity="info" sx={{ py: 0 }} icon={false}>
+            Cross-floor edge — not drawn on the canvas.
+          </Alert>
+        )}
+
+        <EndpointField
+          label="From"
+          nodeId={edge.from}
+          location={endpoints.from}
+          onGo={() => goToNode(edge.from)}
+        />
+        <EndpointField
+          label="To"
+          nodeId={edge.to}
+          location={endpoints.to}
+          onGo={() => goToNode(edge.to)}
+        />
+
         <FormControl size="small" fullWidth>
           <InputLabel>Edge Type</InputLabel>
           <Select
             label="Edge Type"
             value={edge.edgeType}
-            onChange={(e) => onUpdate({ edgeType: e.target.value as EdgeType })}
+            onChange={(e) =>
+              updateEdge(edge.id, { edgeType: e.target.value as EdgeType })
+            }
           >
             {EDGE_TYPE_OPTIONS.map((opt) => (
               <MenuItem key={opt.value} value={opt.value}>
@@ -403,17 +458,116 @@ function EdgeProperties({
             ))}
           </Select>
         </FormControl>
+
+        <TextField
+          label="Weight"
+          type="number"
+          value={weight}
+          onChange={(e) => setWeight(e.target.value)}
+          onBlur={() => {
+            const v = Number(weight);
+            if (Number.isFinite(v) && v !== edge.weight) {
+              updateEdge(edge.id, { weight: v });
+            } else {
+              setWeight(String(edge.weight));
+            }
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+          }}
+          size="small"
+          helperText="Routing cost used by pathfinding"
+        />
+
+        <TextField
+          label="Distance (px)"
+          type="number"
+          value={distance}
+          onChange={(e) => setDistance(e.target.value)}
+          onBlur={() => {
+            const v = Number(distance);
+            if (Number.isFinite(v) && v !== edge.distance) {
+              updateEdge(edge.id, { distance: v });
+            } else {
+              setDistance(String(edge.distance));
+            }
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+          }}
+          size="small"
+          disabled={crossFloor}
+          helperText={
+            crossFloor
+              ? 'Not applicable across floors — use Weight'
+              : 'Auto-updated when nodes move'
+          }
+        />
+
         <FormControlLabel
           control={
             <Switch
               checked={edge.bidirectional}
-              onChange={(e) => onUpdate({ bidirectional: e.target.checked })}
+              onChange={(e) =>
+                updateEdge(edge.id, { bidirectional: e.target.checked })
+              }
             />
           }
           label={edge.bidirectional ? 'Bidirectional' : 'One-way'}
         />
+
+        <Divider />
+
+        <MetadataEditor
+          value={edge.metadata}
+          onChange={(metadata) => updateEdge(edge.id, { metadata })}
+        />
       </Stack>
     </PanelShell>
+  );
+}
+
+/** Read-only endpoint with its resolved location and a jump button. */
+function EndpointField({
+  label,
+  nodeId,
+  location,
+  onGo,
+}: {
+  label: string;
+  nodeId: string;
+  location: NodeLocation | undefined;
+  onGo: () => void;
+}) {
+  return (
+    <Box>
+      <Stack direction="row" spacing={1} alignItems="flex-start">
+        <TextField
+          label={label}
+          value={location ? location.node.label || location.node.id : nodeId}
+          InputProps={{ readOnly: true }}
+          size="small"
+          fullWidth
+          helperText={
+            location
+              ? `${location.building.name} · ${location.floor.name}`
+              : 'Node not found'
+          }
+        />
+        <Tooltip title={`Go to ${label.toLowerCase()} node`}>
+          <span>
+            <IconButton
+              size="small"
+              onClick={onGo}
+              disabled={!location}
+              sx={{ mt: 0.5 }}
+            >
+              <MyLocationIcon fontSize="small" />
+            </IconButton>
+          </span>
+        </Tooltip>
+      </Stack>
+    </Box>
   );
 }
 

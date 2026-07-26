@@ -3,6 +3,7 @@ import { Circle, Group, Text } from 'react-konva';
 import type Konva from 'konva';
 import type { GraphNode } from '@/models/types';
 import {
+  CROSS_FLOOR_BADGE_COLOR,
   HOVER_COLOR,
   NODE_COLORS,
   NODE_RADIUS,
@@ -12,6 +13,8 @@ import {
 interface NodeLayerProps {
   nodes: GraphNode[];
   selectedNodeIds: Set<string>;
+  /** nodeId → number of connections leaving this floor. Absent means none. */
+  crossFloorCounts: Map<string, number>;
   showLabels: boolean;
   scale: number;
   draggable: boolean;
@@ -24,6 +27,7 @@ interface NodeLayerProps {
 interface NodeShapeProps {
   node: GraphNode;
   selected: boolean;
+  crossFloorCount: number;
   showLabel: boolean;
   scale: number;
   draggable: boolean;
@@ -36,6 +40,7 @@ interface NodeShapeProps {
 function NodeShape({
   node,
   selected,
+  crossFloorCount,
   showLabel,
   scale,
   draggable,
@@ -96,6 +101,25 @@ function NodeShape({
       {node.type !== 'NORMAL' && (
         <Circle radius={2.5} fill="#0d1117" listening={false} />
       )}
+      {/*
+        Cross-floor connections are never drawn as lines — the far endpoint is
+        in another coordinate space. A compact badge marks the node instead;
+        the Connections panel lists the detail.
+      */}
+      {crossFloorCount > 0 && (
+        <Text
+          text={`⇅${crossFloorCount}`}
+          x={-radius - 15 * strokeScale}
+          y={-radius - 11 * strokeScale}
+          fontSize={11 * strokeScale}
+          fontStyle="bold"
+          fill={CROSS_FLOOR_BADGE_COLOR}
+          listening={false}
+          shadowColor="#000"
+          shadowBlur={3}
+          shadowOpacity={0.9}
+        />
+      )}
       {showLabel && (node.label || selected) && (
         <Text
           text={node.label || node.id.slice(0, 8)}
@@ -118,6 +142,7 @@ const MemoNodeShape = memo(NodeShape);
 function NodeLayerComponent({
   nodes,
   selectedNodeIds,
+  crossFloorCounts,
   showLabels,
   scale,
   draggable,
@@ -161,6 +186,7 @@ function NodeLayerComponent({
           key={node.id}
           node={node}
           selected={selectedNodeIds.has(node.id)}
+          crossFloorCount={crossFloorCounts.get(node.id) ?? 0}
           showLabel={showLabels}
           scale={scale}
           draggable={draggable}

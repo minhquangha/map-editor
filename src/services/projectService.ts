@@ -19,9 +19,12 @@ import {
 import {
   addFloorToBuilding,
   cloneBuildings,
+  cloneEdges,
   cloneFloors,
+  collectBuildingNodeIds,
   createBuilding,
   duplicateBuilding,
+  duplicateInternalEdges,
   findBuilding,
   findFloorLocation,
   listAllFloors,
@@ -33,7 +36,30 @@ import {
   updateBuilding,
   updateFloorInBuilding,
 } from '@/services/buildingService';
+import {
+  createEdge,
+  deleteEdgesFromList,
+  deleteNodesFromFloor,
+  moveNodesOnFloor,
+  pruneDanglingEdges,
+  recalculateEdgeDistances,
+  renameEdgeEndpoints,
+  renameEdgeIdInList,
+  renameNodeIdOnFloor,
+  setEdgeEndpoints,
+  updateEdgeInList,
+  updateNodeOnFloor,
+  validateNodeId,
+  type CreateEdgeInput,
+} from '@/services/graphService';
+import {
+  buildNodeIndex,
+  collectNodeIds,
+  createEndpointLocator,
+  recalculateFloorEdgeDistances,
+} from '@/services/navigationService';
 import { parseNodeProperties } from '@/services/propertyService';
+import { DEFAULT_EDGE_WEIGHT } from '@/utils/constants';
 
 /**
  * Project document concerns: create, clone, serialize, parse/migrate, and the
@@ -60,6 +86,7 @@ export function createEmptyProject(name = 'Untitled Project'): MapEditorProject 
     activeBuildingId: building.id,
     activeFloorId: building.floors[0].id,
     buildings: [building],
+    edges: [],
     metadata: {},
   };
 }
@@ -68,6 +95,7 @@ export function cloneProject(project: MapEditorProject): MapEditorProject {
   return {
     ...project,
     buildings: cloneBuildings(project.buildings),
+    edges: cloneEdges(project.edges),
     metadata: project.metadata ? { ...project.metadata } : {},
   };
 }
@@ -136,7 +164,13 @@ export function parseProject(content: string): MapEditorProject {
       ? parseBuildings(source.buildings)
       : [migrateLegacyFloors(source.floors)];
 
-  assertUniqueIds(buildings);
+  // Version 3 stores edges on the project. Versions 1 and 2 stored them per
+  // floor; hoist those up so cross-floor edges become expressible.
+  const rawEdges =
+    version >= 3 ? source.edges : collectLegacyEdges(source, version);
+  const edges = Array.isArray(rawEdges) ? rawEdges.map(parseGraphEdge) : [];
+
+  assertGraphIntegrity(buildings, edges);
 
   // `floors` only exists on version 1 documents; its contents now live inside
   // the migrated building, so drop the stale duplicate.
@@ -153,10 +187,32 @@ export function parseProject(content: string): MapEditorProject {
     activeBuildingId: Number(source.activeBuildingId),
     activeFloorId: Number(source.activeFloorId),
     buildings,
+    edges,
     metadata: (parseMetadata(source.metadata) as ProjectMetadata) ?? {},
   };
 
   return normalizeActive(project);
+}
+
+/** Pull per-floor `edges` arrays out of a version 1 or 2 document. */
+function collectLegacyEdges(
+  source: Record<string, unknown>,
+  version: number
+): unknown[] {
+  const rawFloors: unknown[] =
+    version >= 2
+      ? (Array.isArray(source.buildings) ? source.buildings : []).flatMap((b) => {
+          const building = asRecord(b);
+          return Array.isArray(building.floors) ? building.floors : [];
+        })
+      : Array.isArray(source.floors)
+        ? source.floors
+        : [];
+
+  return rawFloors.flatMap((f) => {
+    const floor = asRecord(f);
+    return Array.isArray(floor.edges) ? floor.edges : [];
+  });
 }
 
 /** Wrap version-1 top-level floors into the default building. */
@@ -219,8 +275,12 @@ function parseFloor(raw: unknown, index: number): Floor {
     throw new Error(`Invalid floor id: ${String(source.id)}`);
   }
 
+  // Legacy per-floor `edges` are hoisted to the project by the caller; drop
+  // the key here so it does not survive as a stale duplicate.
+  const { edges: _legacyEdges, ...rest } = source;
+
   return {
-    ...source,
+    ...rest,
     id,
     name:
       typeof source.name === 'string' && source.name
@@ -234,7 +294,6 @@ function parseFloor(raw: unknown, index: number): Floor {
     nodes: Array.isArray(source.nodes)
       ? source.nodes.map((n) => parseGraphNode(n, id))
       : [],
-    edges: Array.isArray(source.edges) ? source.edges.map(parseGraphEdge) : [],
     metadata: parseMetadata(source.metadata),
   } as Floor;
 }
@@ -264,24 +323,37 @@ function parseGraphNode(raw: unknown, floorId: number): GraphNode {
 
 function parseGraphEdge(raw: unknown): GraphEdge {
   const source = asRecord(raw);
+
+  // `weight` arrived in version 3. Older edges default to the standard cost
+  // rather than inheriting their pixel distance, so routing stays predictable.
+  const rawWeight = Number(source.weight);
+  const weight = Number.isFinite(rawWeight) ? rawWeight : DEFAULT_EDGE_WEIGHT;
+
   return {
     ...source,
     id: String(source.id ?? ''),
     from: String(source.from ?? ''),
     to: String(source.to ?? ''),
     distance: Number(source.distance) || 0,
+    weight,
     edgeType: (source.edgeType as GraphEdge['edgeType']) || 'NORMAL',
     bidirectional: source.bidirectional !== false,
+    metadata: parseMetadata(source.metadata),
   } as GraphEdge;
 }
 
 /**
- * Building ids must be unique project-wide, and floor ids must be unique
- * across every building so the flat export stays unambiguous.
+ * Structural invariants the rest of the app relies on:
+ *
+ * - building ids unique project-wide
+ * - floor ids unique across every building, so the flat export stays clear
+ * - node ids unique project-wide, because edges reference nodes by id alone
+ * - edge ids unique, and both endpoints resolving to a real node
  */
-function assertUniqueIds(buildings: Building[]): void {
+function assertGraphIntegrity(buildings: Building[], edges: GraphEdge[]): void {
   const buildingIds = new Set<number>();
   const floorIds = new Set<number>();
+  const nodeIds = new Set<string>();
 
   for (const building of buildings) {
     if (buildingIds.has(building.id)) {
@@ -296,6 +368,36 @@ function assertUniqueIds(buildings: Building[]): void {
         );
       }
       floorIds.add(floor.id);
+
+      for (const node of floor.nodes) {
+        if (!node.id) {
+          throw new Error(`Floor ${floor.id} contains a node with no id.`);
+        }
+        if (nodeIds.has(node.id)) {
+          throw new Error(
+            `Duplicate node id "${node.id}" (node ids must be unique across the whole project).`
+          );
+        }
+        nodeIds.add(node.id);
+      }
+    }
+  }
+
+  const edgeIds = new Set<string>();
+  for (const edge of edges) {
+    if (!edge.id) {
+      throw new Error('Project contains an edge with no id.');
+    }
+    if (edgeIds.has(edge.id)) {
+      throw new Error(`Duplicate edge id: ${edge.id}`);
+    }
+    edgeIds.add(edge.id);
+
+    if (!nodeIds.has(edge.from)) {
+      throw new Error(`Edge "${edge.id}" references unknown node "${edge.from}".`);
+    }
+    if (!nodeIds.has(edge.to)) {
+      throw new Error(`Edge "${edge.id}" references unknown node "${edge.to}".`);
     }
   }
 }
@@ -371,11 +473,20 @@ export function removeBuildingFromProject(
   if (project.buildings.length <= 1) {
     throw new Error('At least one building is required.');
   }
-  const buildings = project.buildings.filter((b) => b.id !== buildingId);
-  if (buildings.length === project.buildings.length) {
+  const target = findBuilding(project.buildings, buildingId);
+  if (!target) {
     throw new Error(`Building ${buildingId} not found.`);
   }
-  return normalizeActive(touch({ ...project, buildings }));
+
+  const buildings = project.buildings.filter((b) => b.id !== buildingId);
+
+  // Edges reaching into the removed building — from anywhere — go with it.
+  const removedNodeIds = collectBuildingNodeIds(target);
+  const edges = project.edges.filter(
+    (e) => !removedNodeIds.has(e.from) && !removedNodeIds.has(e.to)
+  );
+
+  return normalizeActive(touch({ ...project, buildings, edges }));
 }
 
 export function updateBuildingInProject(
@@ -425,7 +536,7 @@ export function duplicateBuildingInProject(
     return id;
   };
 
-  const copy = duplicateBuilding(
+  const { building: copy, nodeIdMap } = duplicateBuilding(
     source,
     nextBuildingId(project.buildings),
     allocateFloorId
@@ -438,6 +549,9 @@ export function duplicateBuildingInProject(
   return touch({
     ...project,
     buildings,
+    // Edges wholly inside the source building are copied too; edges leaving it
+    // are not, since where the copy should attach is ambiguous.
+    edges: [...project.edges, ...duplicateInternalEdges(project.edges, nodeIdMap)],
     activeBuildingId: copy.id,
     activeFloorId: copy.floors[0].id,
   });
@@ -481,12 +595,19 @@ export function removeFloorFromProject(
     );
   }
 
+  // Edges reaching into the removed floor — from any floor — go with it.
+  const removedNodeIds = new Set(location.floor.nodes.map((n) => n.id));
+  const edges = project.edges.filter(
+    (e) => !removedNodeIds.has(e.from) && !removedNodeIds.has(e.to)
+  );
+
   return normalizeActive(
     touch({
       ...project,
       buildings: updateBuilding(project.buildings, location.building.id, (b) =>
         removeFloorFromBuilding(b, floorId)
       ),
+      edges,
     })
   );
 }
@@ -560,6 +681,188 @@ export function setActiveBuildingInProject(
     activeBuildingId: buildingId,
     activeFloorId: stillInside ? project.activeFloorId : building.floors[0].id,
   };
+}
+
+// ── Graph operations (nodes on floors, edges on the project) ───────────────
+
+/** Endpoint locator bound to the project's current node set. */
+export function projectEndpointLocator(project: MapEditorProject) {
+  return createEndpointLocator(buildNodeIndex(project));
+}
+
+/**
+ * Apply a node patch and refresh the distances of edges touching it.
+ * Only same-floor edges have a meaningful distance, so the refresh is scoped
+ * to the node's own floor.
+ */
+export function updateNodeInProject(
+  project: MapEditorProject,
+  floorId: number,
+  nodeId: string,
+  patch: Parameters<typeof updateNodeOnFloor>[2]
+): MapEditorProject {
+  const next = updateFloorInProject(project, floorId, (f) =>
+    updateNodeOnFloor(f, nodeId, patch)
+  );
+
+  const positionChanged = patch.x !== undefined || patch.y !== undefined;
+  if (!positionChanged) {
+    return next;
+  }
+
+  const floor = findFloorLocation(next.buildings, floorId)?.floor;
+  return floor
+    ? { ...next, edges: recalculateFloorEdgeDistances(next.edges, floor) }
+    : next;
+}
+
+/** Move nodes on a floor and refresh the distances of edges inside it. */
+export function moveNodesInProject(
+  project: MapEditorProject,
+  floorId: number,
+  nodeIds: string[],
+  dx: number,
+  dy: number
+): MapEditorProject {
+  const next = updateFloorInProject(project, floorId, (f) =>
+    moveNodesOnFloor(f, nodeIds, dx, dy)
+  );
+  if (next === project) {
+    return project;
+  }
+
+  const floor = findFloorLocation(next.buildings, floorId)?.floor;
+  return floor
+    ? { ...next, edges: recalculateFloorEdgeDistances(next.edges, floor) }
+    : next;
+}
+
+/** Delete nodes from a floor and drop every edge that referenced them. */
+export function deleteNodesInProject(
+  project: MapEditorProject,
+  floorId: number,
+  nodeIds: string[]
+): MapEditorProject {
+  const next = updateFloorInProject(project, floorId, (f) =>
+    deleteNodesFromFloor(f, nodeIds)
+  );
+  const removed = new Set(nodeIds);
+  return {
+    ...next,
+    edges: next.edges.filter(
+      (e) => !removed.has(e.from) && !removed.has(e.to)
+    ),
+  };
+}
+
+/**
+ * Rename a node id and rewrite every edge endpoint that referenced it.
+ * Validates project-wide, since edges address nodes by id alone.
+ */
+export function renameNodeIdInProject(
+  project: MapEditorProject,
+  floorId: number,
+  oldId: string,
+  newId: string
+): MapEditorProject {
+  const nextId = newId.trim();
+  if (nextId === oldId) {
+    return project;
+  }
+
+  const error = validateNodeId(collectNodeIds(project), nextId, {
+    excludeId: oldId,
+  });
+  if (error) {
+    throw new Error(error);
+  }
+
+  const next = updateFloorInProject(project, floorId, (f) =>
+    renameNodeIdOnFloor(f, oldId, nextId)
+  );
+
+  return { ...next, edges: renameEdgeEndpoints(next.edges, oldId, nextId) };
+}
+
+/** Create an edge between any two nodes, on the same floor or across floors. */
+export function createEdgeInProject(
+  project: MapEditorProject,
+  input: CreateEdgeInput
+): MapEditorProject {
+  return touch({
+    ...project,
+    edges: createEdge(project.edges, input, projectEndpointLocator(project)),
+  });
+}
+
+export function updateEdgeInProject(
+  project: MapEditorProject,
+  edgeId: string,
+  patch: Parameters<typeof updateEdgeInList>[2]
+): MapEditorProject {
+  return touch({
+    ...project,
+    edges: updateEdgeInList(project.edges, edgeId, patch),
+  });
+}
+
+export function renameEdgeIdInProject(
+  project: MapEditorProject,
+  oldId: string,
+  newId: string
+): MapEditorProject {
+  const edges = renameEdgeIdInList(project.edges, oldId, newId);
+  return edges === project.edges ? project : touch({ ...project, edges });
+}
+
+/** Repoint an existing edge at different endpoints. */
+export function setEdgeEndpointsInProject(
+  project: MapEditorProject,
+  edgeId: string,
+  fromId: string,
+  toId: string
+): MapEditorProject {
+  return touch({
+    ...project,
+    edges: setEdgeEndpoints(
+      project.edges,
+      edgeId,
+      fromId,
+      toId,
+      projectEndpointLocator(project)
+    ),
+  });
+}
+
+export function deleteEdgesInProject(
+  project: MapEditorProject,
+  edgeIds: string[]
+): MapEditorProject {
+  return touch({
+    ...project,
+    edges: deleteEdgesFromList(project.edges, edgeIds),
+  });
+}
+
+/** Rebuild every same-floor edge distance from current node positions. */
+export function recalculateAllDistancesInProject(
+  project: MapEditorProject
+): MapEditorProject {
+  return {
+    ...project,
+    edges: recalculateEdgeDistances(
+      project.edges,
+      projectEndpointLocator(project)
+    ),
+  };
+}
+
+/** Drop edges whose endpoints no longer exist. Safety net after bulk edits. */
+export function pruneProjectEdges(
+  project: MapEditorProject
+): MapEditorProject {
+  const edges = pruneDanglingEdges(project.edges, collectNodeIds(project));
+  return edges.length === project.edges.length ? project : { ...project, edges };
 }
 
 function touch(project: MapEditorProject): MapEditorProject {

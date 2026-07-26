@@ -77,8 +77,8 @@ function FloorPanelBase({ building, activeFloorId }: FloorPanelProps) {
                 primary={floor.name}
                 secondary={
                   floor.imageName
-                    ? `${floor.imageName} · ${floor.nodes.length}n / ${floor.edges.length}e`
-                    : `No image · ${floor.nodes.length}n / ${floor.edges.length}e`
+                    ? `${floor.imageName} · ${floor.nodes.length}n`
+                    : `No image · ${floor.nodes.length}n`
                 }
                 primaryTypographyProps={{
                   variant: 'body2',

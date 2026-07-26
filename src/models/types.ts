@@ -7,8 +7,19 @@ export type NodeType =
   | 'ENTRANCE'
   | 'EXIT';
 
-/** Edge classification. */
-export type EdgeType = 'NORMAL' | 'STAIR' | 'ELEVATOR';
+/**
+ * Edge classification.
+ * `STAIR` is kept (rather than `STAIRS`) so version 1/2 documents load as-is.
+ */
+export type EdgeType =
+  | 'NORMAL'
+  | 'ELEVATOR'
+  | 'STAIR'
+  | 'ESCALATOR'
+  | 'BRIDGE'
+  | 'TUNNEL'
+  | 'OUTDOOR'
+  | 'CUSTOM';
 
 /** Editor tool currently active in the toolbar. */
 export type EditorTool =
@@ -64,15 +75,34 @@ export interface GraphNode {
   propertySchema: Record<string, CustomPropertySchema>;
 }
 
-/** A directed connection between two nodes. */
+/**
+ * A directed connection between two nodes.
+ *
+ * Lives on the project, not on a floor: endpoints may sit on different floors
+ * (and, later, different buildings). `from`/`to` keep their original names so
+ * existing documents and export consumers are unaffected.
+ */
 export interface GraphEdge {
   id: string;
   from: string;
   to: string;
+  /**
+   * Euclidean pixel length between the endpoints.
+   * Auto-maintained for same-floor edges; `0` for cross-floor edges, whose
+   * endpoints live in unrelated coordinate spaces.
+   */
   distance: number;
+  /**
+   * Routing cost consumed by pathfinding backends. Defaults to
+   * `DEFAULT_EDGE_WEIGHT`. Unlike `distance` this is never recomputed —
+   * it is whatever the user sets.
+   */
+  weight: number;
   edgeType: EdgeType;
   /** When true, the reverse edge is implied / stored as bidirectional. */
   bidirectional: boolean;
+  /** Free-form, editor-agnostic data. */
+  metadata?: Metadata;
 }
 
 /**
@@ -91,7 +121,6 @@ export interface Floor {
   /** Natural pixel height of the background image. */
   imageHeight: number;
   nodes: GraphNode[];
-  edges: GraphEdge[];
   /** Free-form, editor-agnostic data. */
   metadata?: Metadata;
 }
@@ -115,7 +144,7 @@ export interface ProjectMetadata {
 
 /** Full project document (.mapeditor). */
 export interface MapEditorProject {
-  version: 2;
+  version: 3;
   name: string;
   createdAt: string;
   updatedAt: string;
@@ -124,7 +153,33 @@ export interface MapEditorProject {
   /** Active floor id (unique project-wide). */
   activeFloorId: number;
   buildings: Building[];
+  /**
+   * The graph layer: every edge in the project, including those whose
+   * endpoints sit on different floors. Floors own nodes; the project owns
+   * the connections between them.
+   */
+  edges: GraphEdge[];
   metadata?: ProjectMetadata;
+}
+
+/** Where a node lives. Resolved through the node index, never stored. */
+export interface NodeLocation {
+  node: GraphNode;
+  floor: Floor;
+  building: Building;
+}
+
+/** One edge as seen from a node, for the Connections panel. */
+export interface NodeConnection {
+  edge: GraphEdge;
+  /** The node at the other end. */
+  target: NodeLocation;
+  /** True when this node is the edge's `from`. */
+  outgoing: boolean;
+  /** True when the endpoints sit on different floors. */
+  crossFloor: boolean;
+  /** True when the endpoints sit in different buildings. */
+  crossBuilding: boolean;
 }
 
 /** Export format consumed by pathfinding backends. */
@@ -136,6 +191,12 @@ export interface ExportGraph {
    * working; floor ids are unique project-wide, so this stays unambiguous.
    */
   floors: ExportFloor[];
+  /**
+   * Every edge in the project, same-floor and cross-floor alike.
+   * This is the authoritative edge list — the per-floor `edges` arrays only
+   * carry the same-floor subset, for backward compatibility.
+   */
+  edges: ExportEdge[];
 }
 
 export interface ExportBuilding {
@@ -171,11 +232,22 @@ export interface ExportNode {
 }
 
 export interface ExportEdge {
+  id: string;
   from: string;
   to: string;
+  /** Resolved location of the `from` endpoint. */
+  fromBuilding: number;
+  fromFloor: number;
+  /** Resolved location of the `to` endpoint. */
+  toBuilding: number;
+  toFloor: number;
   distance: number;
+  weight: number;
   edgeType: EdgeType;
   bidirectional: boolean;
+  /** True when the endpoints sit on different floors. */
+  crossFloor: boolean;
+  metadata?: Metadata;
 }
 
 /** Selection state on the canvas. */
@@ -194,6 +266,7 @@ export interface Viewport {
 /** Snapshot used by undo/redo. */
 export interface HistorySnapshot {
   buildings: Building[];
+  edges: GraphEdge[];
   activeBuildingId: number;
   activeFloorId: number;
   selection: SelectionState;

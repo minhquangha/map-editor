@@ -3,6 +3,7 @@ import { Toolbar } from './Toolbar';
 import { StatusBar } from './StatusBar';
 import { BuildingPanel } from '@/components/panels/BuildingPanel';
 import { PropertiesPanel } from '@/components/panels/PropertiesPanel';
+import { EdgeCreateDialog } from '@/components/panels/EdgeCreateDialog';
 import { EditorCanvas } from '@/components/canvas/EditorCanvas';
 
 const LEFT_PANEL_WIDTH = 300;
@@ -64,6 +65,8 @@ export function AppLayout() {
       </Box>
 
       <StatusBar />
+
+      <EdgeCreateDialog />
     </Box>
   );
 }

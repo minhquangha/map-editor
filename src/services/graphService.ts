@@ -5,10 +5,12 @@ import type {
   Floor,
   GraphEdge,
   GraphNode,
+  Metadata,
   NodeType,
 } from '@/models/types';
 import { nodeDistance, roundCoord, roundDistance } from '@/utils/geometry';
 import { createEdgeId, createNodeId } from '@/utils/id';
+import { DEFAULT_EDGE_WEIGHT } from '@/utils/constants';
 import {
   addProperty,
   cloneNode,
@@ -53,6 +55,13 @@ export function addNodeToFloor(floor: Floor, input: CreateNodeInput): Floor {
   };
 }
 
+/**
+ * Apply a patch to one node.
+ *
+ * Edge distances are *not* touched here — edges live on the project, so the
+ * project layer recomputes them after a position change
+ * (see `recalculateEdgeDistances`).
+ */
 export function updateNodeOnFloor(
   floor: Floor,
   nodeId: string,
@@ -71,38 +80,20 @@ export function updateNodeOnFloor(
     };
   });
 
-  // When position changes, recompute all incident edge distances.
-  const moved = nodes.find((n) => n.id === nodeId);
-  const positionChanged =
-    patch.x !== undefined || patch.y !== undefined;
-
-  if (!positionChanged || !moved) {
-    return { ...floor, nodes };
-  }
-
-  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
-  const edges = floor.edges.map((edge) => {
-    if (edge.from !== nodeId && edge.to !== nodeId) {
-      return edge;
-    }
-    const from = nodeMap.get(edge.from);
-    const to = nodeMap.get(edge.to);
-    if (!from || !to) return edge;
-    return {
-      ...edge,
-      distance: roundDistance(nodeDistance(from, to)),
-    };
-  });
-
-  return { ...floor, nodes, edges };
+  return { ...floor, nodes };
 }
 
 /**
- * Validate a candidate node id on a floor.
+ * Validate a candidate node id.
+ *
+ * Node ids must be unique across the whole project, not just within a floor:
+ * edges live on the project and reference nodes by id alone, so a duplicate
+ * id anywhere would make an endpoint ambiguous.
+ *
  * Returns an error message, or `null` when the id is acceptable.
  */
 export function validateNodeId(
-  floor: Floor,
+  existingNodeIds: Iterable<string>,
   candidateId: string,
   options?: { excludeId?: string }
 ): string | null {
@@ -114,26 +105,17 @@ export function validateNodeId(
     return 'Node ID contains invalid characters.';
   }
   const exclude = options?.excludeId;
-  const duplicate = floor.nodes.some((n) => n.id === id && n.id !== exclude);
-  if (duplicate) {
-    return `Node ID "${id}" is already in use on this floor.`;
+  for (const existing of existingNodeIds) {
+    if (existing === id && existing !== exclude) {
+      return `Node ID "${id}" is already in use in this project.`;
+    }
   }
   return null;
 }
 
-/** Count edges that reference a node as from or to. */
-export function countNodeEdgeReferences(floor: Floor, nodeId: string): number {
-  return floor.edges.reduce((count, edge) => {
-    if (edge.from === nodeId || edge.to === nodeId) {
-      return count + 1;
-    }
-    return count;
-  }, 0);
-}
-
 /**
- * Rename a node id and rewrite every edge that references it.
- * Throws if validation fails or the node does not exist.
+ * Rename a node id on its floor. Edge endpoints are rewritten separately by
+ * the project layer (`renameNodeIdInProject`), since edges are not floor-owned.
  * No-ops (returns the same floor reference) when ids are equal after trim.
  */
 export function renameNodeIdOnFloor(
@@ -146,48 +128,42 @@ export function renameNodeIdOnFloor(
     return floor;
   }
 
-  const node = floor.nodes.find((n) => n.id === oldId);
-  if (!node) {
+  if (!floor.nodes.some((n) => n.id === oldId)) {
     throw new Error(`Node "${oldId}" not found.`);
-  }
-
-  const error = validateNodeId(floor, nextId, { excludeId: oldId });
-  if (error) {
-    throw new Error(error);
   }
 
   const nodes = floor.nodes.map((n) =>
     n.id === oldId ? { ...n, id: nextId } : n
   );
 
-  const edges = floor.edges.map((edge) => {
-    const from = edge.from === oldId ? nextId : edge.from;
-    const to = edge.to === oldId ? nextId : edge.to;
+  // Integrity: no duplicate node ids on this floor after rename.
+  if (new Set(nodes.map((n) => n.id)).size !== nodes.length) {
+    throw new Error('Rename aborted: duplicate node ids detected.');
+  }
+
+  return { ...floor, nodes };
+}
+
+/** Rewrite every edge endpoint that referenced `oldId`. */
+export function renameEdgeEndpoints(
+  edges: GraphEdge[],
+  oldId: string,
+  newId: string
+): GraphEdge[] {
+  return edges.map((edge) => {
+    const from = edge.from === oldId ? newId : edge.from;
+    const to = edge.to === oldId ? newId : edge.to;
     if (from === edge.from && to === edge.to) {
       return edge;
     }
     return { ...edge, from, to };
   });
-
-  // Integrity: every rewritten edge endpoint must resolve.
-  const idSet = new Set(nodes.map((n) => n.id));
-  for (const edge of edges) {
-    if (!idSet.has(edge.from) || !idSet.has(edge.to)) {
-      throw new Error(
-        'Rename aborted: edge reference integrity check failed.'
-      );
-    }
-  }
-
-  // Integrity: no duplicate node ids after rename.
-  if (idSet.size !== nodes.length) {
-    throw new Error('Rename aborted: duplicate node ids detected.');
-  }
-
-  return { ...floor, nodes, edges };
 }
 
-/** Move multiple nodes by delta; update all affected edge distances once. */
+/**
+ * Move multiple nodes by delta.
+ * Incident edge distances are refreshed by the project layer afterwards.
+ */
 export function moveNodesOnFloor(
   floor: Floor,
   nodeIds: string[],
@@ -208,21 +184,7 @@ export function moveNodesOnFloor(
     };
   });
 
-  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
-  const edges = floor.edges.map((edge) => {
-    if (!idSet.has(edge.from) && !idSet.has(edge.to)) {
-      return edge;
-    }
-    const from = nodeMap.get(edge.from);
-    const to = nodeMap.get(edge.to);
-    if (!from || !to) return edge;
-    return {
-      ...edge,
-      distance: roundDistance(nodeDistance(from, to)),
-    };
-  });
-
-  return { ...floor, nodes, edges };
+  return { ...floor, nodes };
 }
 
 /** Apply a pure node transform for custom property mutations. */
@@ -304,102 +266,200 @@ export function replaceNodePropertiesOnFloor(
   );
 }
 
+/**
+ * Remove nodes from a floor.
+ * Edges referencing them are pruned by the project layer
+ * (`pruneDanglingEdges`), since an edge may originate on another floor.
+ */
 export function deleteNodesFromFloor(floor: Floor, nodeIds: string[]): Floor {
   const idSet = new Set(nodeIds);
   return {
     ...floor,
     nodes: floor.nodes.filter((n) => !idSet.has(n.id)),
-    edges: floor.edges.filter(
-      (e) => !idSet.has(e.from) && !idSet.has(e.to)
-    ),
   };
 }
+
+// ── Edges (project-scoped: endpoints may live on different floors) ─────────
+
+/**
+ * Resolves an edge endpoint to its node and owning floor.
+ * Supplied by the project layer so this module stays project-agnostic.
+ */
+export type EdgeEndpointLocator = (
+  nodeId: string
+) => { node: GraphNode; floorId: number } | undefined;
 
 export interface CreateEdgeInput {
   from: string;
   to: string;
   edgeType?: EdgeType;
   bidirectional?: boolean;
+  weight?: number;
+  metadata?: Metadata;
 }
 
-export function createEdgeOnFloor(
-  floor: Floor,
-  input: CreateEdgeInput
-): Floor {
+/**
+ * Distance is only meaningful when both endpoints share a coordinate space.
+ * Cross-floor edges get `0` and rely on `weight` for routing cost.
+ */
+function edgeDistanceFor(
+  from: { node: GraphNode; floorId: number },
+  to: { node: GraphNode; floorId: number }
+): number {
+  if (from.floorId !== to.floorId) {
+    return 0;
+  }
+  return roundDistance(nodeDistance(from.node, to.node));
+}
+
+/** Append a new edge to the project edge list. */
+export function createEdge(
+  edges: GraphEdge[],
+  input: CreateEdgeInput,
+  locate: EdgeEndpointLocator
+): GraphEdge[] {
   if (input.from === input.to) {
     throw new Error('Cannot create an edge from a node to itself.');
   }
 
-  const fromNode = floor.nodes.find((n) => n.id === input.from);
-  const toNode = floor.nodes.find((n) => n.id === input.to);
-  if (!fromNode || !toNode) {
-    throw new Error('Both nodes must exist on the same floor.');
+  const from = locate(input.from);
+  const to = locate(input.to);
+  if (!from || !to) {
+    throw new Error('Both nodes must exist in the project.');
   }
 
   // Prevent exact duplicate directed edges.
-  const exists = floor.edges.some(
-    (e) => e.from === input.from && e.to === input.to
-  );
-  if (exists) {
+  if (edges.some((e) => e.from === input.from && e.to === input.to)) {
     throw new Error('Edge already exists between these nodes.');
   }
 
+  return [...edges, { ...buildEdge(input, from, to), id: createEdgeId() }];
+}
+
+function buildEdge(
+  input: CreateEdgeInput,
+  from: { node: GraphNode; floorId: number },
+  to: { node: GraphNode; floorId: number }
+): Omit<GraphEdge, 'id'> {
   // Infer edge type from node types when not provided.
   let edgeType: EdgeType = input.edgeType ?? 'NORMAL';
   if (!input.edgeType) {
-    if (fromNode.type === 'ELEVATOR' && toNode.type === 'ELEVATOR') {
+    if (from.node.type === 'ELEVATOR' && to.node.type === 'ELEVATOR') {
       edgeType = 'ELEVATOR';
-    } else if (fromNode.type === 'STAIR' && toNode.type === 'STAIR') {
+    } else if (from.node.type === 'STAIR' && to.node.type === 'STAIR') {
       edgeType = 'STAIR';
     }
   }
 
-  const edge: GraphEdge = {
-    id: createEdgeId(),
+  const weight =
+    input.weight !== undefined && Number.isFinite(input.weight)
+      ? input.weight
+      : DEFAULT_EDGE_WEIGHT;
+
+  return {
     from: input.from,
     to: input.to,
-    distance: roundDistance(nodeDistance(fromNode, toNode)),
+    distance: edgeDistanceFor(from, to),
+    weight,
     edgeType,
     bidirectional: input.bidirectional !== false,
-  };
-
-  return {
-    ...floor,
-    edges: [...floor.edges, edge],
+    metadata: input.metadata,
   };
 }
 
-export function updateEdgeOnFloor(
-  floor: Floor,
+export function updateEdgeInList(
+  edges: GraphEdge[],
   edgeId: string,
-  patch: Partial<Pick<GraphEdge, 'edgeType' | 'bidirectional' | 'distance'>>
-): Floor {
-  return {
-    ...floor,
-    edges: floor.edges.map((e) => {
-      if (e.id !== edgeId) return e;
-      return {
-        ...e,
-        edgeType: patch.edgeType ?? e.edgeType,
-        bidirectional:
-          patch.bidirectional !== undefined
-            ? patch.bidirectional
-            : e.bidirectional,
-        distance:
-          patch.distance !== undefined
-            ? roundDistance(patch.distance)
-            : e.distance,
-      };
-    }),
-  };
+  patch: Partial<
+    Pick<
+      GraphEdge,
+      'edgeType' | 'bidirectional' | 'distance' | 'weight' | 'metadata'
+    >
+  >
+): GraphEdge[] {
+  return edges.map((e) => {
+    if (e.id !== edgeId) return e;
+    return {
+      ...e,
+      edgeType: patch.edgeType ?? e.edgeType,
+      bidirectional:
+        patch.bidirectional !== undefined ? patch.bidirectional : e.bidirectional,
+      distance:
+        patch.distance !== undefined ? roundDistance(patch.distance) : e.distance,
+      weight:
+        patch.weight !== undefined && Number.isFinite(patch.weight)
+          ? patch.weight
+          : e.weight,
+      metadata: patch.metadata !== undefined ? patch.metadata : e.metadata,
+    };
+  });
 }
 
-export function deleteEdgesFromFloor(floor: Floor, edgeIds: string[]): Floor {
+/** Rename an edge id, rejecting blanks and collisions. */
+export function renameEdgeIdInList(
+  edges: GraphEdge[],
+  oldId: string,
+  newId: string
+): GraphEdge[] {
+  const nextId = newId.trim();
+  if (nextId === oldId) {
+    return edges;
+  }
+  if (!nextId) {
+    throw new Error('Edge ID cannot be empty.');
+  }
+  if (!edges.some((e) => e.id === oldId)) {
+    throw new Error(`Edge "${oldId}" not found.`);
+  }
+  if (edges.some((e) => e.id === nextId)) {
+    throw new Error(`Edge ID "${nextId}" is already in use.`);
+  }
+  return edges.map((e) => (e.id === oldId ? { ...e, id: nextId } : e));
+}
+
+/** Repoint an edge at different endpoints, refreshing its distance. */
+export function setEdgeEndpoints(
+  edges: GraphEdge[],
+  edgeId: string,
+  fromId: string,
+  toId: string,
+  locate: EdgeEndpointLocator
+): GraphEdge[] {
+  if (fromId === toId) {
+    throw new Error('Cannot create an edge from a node to itself.');
+  }
+  const from = locate(fromId);
+  const to = locate(toId);
+  if (!from || !to) {
+    throw new Error('Both nodes must exist in the project.');
+  }
+  if (edges.some((e) => e.id !== edgeId && e.from === fromId && e.to === toId)) {
+    throw new Error('Edge already exists between these nodes.');
+  }
+
+  return edges.map((e) =>
+    e.id === edgeId
+      ? { ...e, from: fromId, to: toId, distance: edgeDistanceFor(from, to) }
+      : e
+  );
+}
+
+export function deleteEdgesFromList(
+  edges: GraphEdge[],
+  edgeIds: string[]
+): GraphEdge[] {
   const idSet = new Set(edgeIds);
-  return {
-    ...floor,
-    edges: floor.edges.filter((e) => !idSet.has(e.id)),
-  };
+  return edges.filter((e) => !idSet.has(e.id));
+}
+
+/** Drop every edge whose endpoints no longer resolve to a live node. */
+export function pruneDanglingEdges(
+  edges: GraphEdge[],
+  liveNodeIds: Set<string>
+): GraphEdge[] {
+  return edges.filter(
+    (e) => liveNodeIds.has(e.from) && liveNodeIds.has(e.to)
+  );
 }
 
 export function findNodeAt(
@@ -421,18 +481,22 @@ export function findNodeAt(
   return null;
 }
 
-/** Find edge near a world point (segment distance). */
+/**
+ * Find an edge near a world point (segment distance).
+ * Only same-floor edges are hit-testable — a cross-floor edge is never drawn.
+ */
 export function findEdgeAt(
-  floor: Floor,
+  nodes: GraphNode[],
+  edges: GraphEdge[],
   x: number,
   y: number,
   maxDist: number
 ): GraphEdge | null {
-  const nodeMap = new Map(floor.nodes.map((n) => [n.id, n]));
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
   let best: GraphEdge | null = null;
   let bestDist = maxDist;
 
-  for (const edge of floor.edges) {
+  for (const edge of edges) {
     const a = nodeMap.get(edge.from);
     const b = nodeMap.get(edge.to);
     if (!a || !b) continue;
@@ -482,19 +546,29 @@ export function getNodesInRect(
   );
 }
 
-/** Rebuild all edge distances from current node positions. */
-export function recalculateAllDistances(floor: Floor): Floor {
-  const nodeMap = new Map(floor.nodes.map((n) => [n.id, n]));
-  return {
-    ...floor,
-    edges: floor.edges.map((edge) => {
-      const from = nodeMap.get(edge.from);
-      const to = nodeMap.get(edge.to);
-      if (!from || !to) return edge;
-      return {
-        ...edge,
-        distance: roundDistance(nodeDistance(from, to)),
-      };
-    }),
-  };
+/**
+ * Refresh `distance` on same-floor edges from current node positions.
+ *
+ * Pass `affectedNodeIds` to limit the work to edges touching moved nodes;
+ * omit it to rebuild every distance. Cross-floor edges keep distance 0.
+ */
+export function recalculateEdgeDistances(
+  edges: GraphEdge[],
+  locate: EdgeEndpointLocator,
+  affectedNodeIds?: Set<string>
+): GraphEdge[] {
+  return edges.map((edge) => {
+    if (
+      affectedNodeIds &&
+      !affectedNodeIds.has(edge.from) &&
+      !affectedNodeIds.has(edge.to)
+    ) {
+      return edge;
+    }
+    const from = locate(edge.from);
+    const to = locate(edge.to);
+    if (!from || !to) return edge;
+    const distance = edgeDistanceFor(from, to);
+    return distance === edge.distance ? edge : { ...edge, distance };
+  });
 }

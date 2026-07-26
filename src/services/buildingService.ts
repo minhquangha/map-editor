@@ -26,9 +26,16 @@ export function cloneFloor(floor: Floor): Floor {
   return {
     ...floor,
     nodes: floor.nodes.map((n) => cloneNode(n)),
-    edges: floor.edges.map((e) => ({ ...e })),
     metadata: floor.metadata ? { ...floor.metadata } : undefined,
   };
+}
+
+/** Deep-clone the project edge list. */
+export function cloneEdges(edges: GraphEdge[]): GraphEdge[] {
+  return edges.map((e) => ({
+    ...e,
+    metadata: e.metadata ? { ...e.metadata } : undefined,
+  }));
 }
 
 export function cloneFloors(floors: Floor[]): Floor[] {
@@ -129,7 +136,6 @@ export function createFloor(id: number, name?: string): Floor {
     imageWidth: 0,
     imageHeight: 0,
     nodes: [],
-    edges: [],
   };
 }
 
@@ -222,50 +228,83 @@ export function reorderBuilding(
 /**
  * Deep-copy a building under fresh ids.
  *
- * Node and edge ids are regenerated and every edge endpoint is remapped, so
- * the copy never collides with the original in a flat export. Custom node
- * properties, metadata and unknown fields are carried over as-is.
+ * Every node id is regenerated so the copy never collides with the original.
+ * The returned `nodeIdMap` (original id → copy id) lets the project layer
+ * duplicate the edges that belong to this building; edges are not stored on
+ * floors, so they cannot be copied here.
+ *
+ * Custom node properties, metadata and unknown fields are carried over as-is.
  */
 export function duplicateBuilding(
   source: Building,
   buildingId: number,
   allocateFloorId: () => number,
   name?: string
-): Building {
+): { building: Building; nodeIdMap: Map<string, string> } {
+  const nodeIdMap = new Map<string, string>();
+
   const floors = source.floors.map((floor) => {
-    const idMap = new Map<string, string>();
+    const nextFloorId = allocateFloorId();
 
     const nodes: GraphNode[] = floor.nodes.map((node) => {
       const nextId = createNodeId();
-      idMap.set(node.id, nextId);
-      return { ...cloneNode(node), id: nextId };
+      nodeIdMap.set(node.id, nextId);
+      return { ...cloneNode(node), id: nextId, floor: nextFloorId };
     });
 
-    const edges: GraphEdge[] = floor.edges.map((edge) => ({
-      ...edge,
-      id: createEdgeId(),
-      // Endpoints always resolve: every node on this floor was just remapped.
-      from: idMap.get(edge.from) ?? edge.from,
-      to: idMap.get(edge.to) ?? edge.to,
-    }));
-
-    const nextFloorIdValue = allocateFloorId();
     return {
       ...floor,
-      id: nextFloorIdValue,
-      nodes: nodes.map((n) => ({ ...n, floor: nextFloorIdValue })),
-      edges,
+      id: nextFloorId,
+      nodes,
       metadata: floor.metadata ? { ...floor.metadata } : undefined,
     };
   });
 
   return {
-    ...source,
-    id: buildingId,
-    name: name ?? `${source.name} (copy)`,
-    floors,
-    metadata: source.metadata ? { ...source.metadata } : undefined,
+    building: {
+      ...source,
+      id: buildingId,
+      name: name ?? `${source.name} (copy)`,
+      floors,
+      metadata: source.metadata ? { ...source.metadata } : undefined,
+    },
+    nodeIdMap,
   };
+}
+
+/**
+ * Clone the edges that live wholly inside a duplicated building.
+ *
+ * Edges with only one endpoint in the building are skipped — where the copy
+ * should attach is ambiguous, so leaving it to the user beats guessing.
+ */
+export function duplicateInternalEdges(
+  edges: GraphEdge[],
+  nodeIdMap: Map<string, string>
+): GraphEdge[] {
+  const copies: GraphEdge[] = [];
+  for (const edge of edges) {
+    const from = nodeIdMap.get(edge.from);
+    const to = nodeIdMap.get(edge.to);
+    if (!from || !to) continue;
+    copies.push({
+      ...edge,
+      id: createEdgeId(),
+      from,
+      to,
+      metadata: edge.metadata ? { ...edge.metadata } : undefined,
+    });
+  }
+  return copies;
+}
+
+/** Collect every node id owned by a building. */
+export function collectBuildingNodeIds(building: Building): Set<string> {
+  const ids = new Set<string>();
+  for (const floor of building.floors) {
+    for (const node of floor.nodes) ids.add(node.id);
+  }
+  return ids;
 }
 
 // ── Shared helpers ─────────────────────────────────────────────────────────
