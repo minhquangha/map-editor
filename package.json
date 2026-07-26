@@ -1,6 +1,6 @@
 {
   "name": "map-editor",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Professional hospital floor plan digitizer — convert floor plan images into pathfinding graph data",
   "main": "dist-electron/main.js",
   "author": "Map Editor",
