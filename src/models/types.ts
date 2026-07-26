@@ -18,6 +18,21 @@ export type EditorTool =
   | 'add-edge'
   | 'delete';
 
+/** Supported custom property value kinds. */
+export type CustomPropertyType =
+  | 'string'
+  | 'number'
+  | 'boolean'
+  | 'enum'
+  | 'array';
+
+/** Type metadata for a single custom property key (drives UI editors). */
+export interface CustomPropertySchema {
+  type: CustomPropertyType;
+  /** Choices when type is `enum`. */
+  options?: string[];
+}
+
 /** A graph vertex placed on a floor plan (pixel coordinates). */
 export interface GraphNode {
   id: string;
@@ -26,6 +41,18 @@ export interface GraphNode {
   y: number;
   label: string;
   type: NodeType;
+  /** Free-text room type (e.g. "Blood Test"). Built-in field. */
+  room_type: string;
+  /**
+   * Unlimited custom property values.
+   * Keys are user-defined; values are typed via `propertySchema`.
+   */
+  properties: Record<string, unknown>;
+  /**
+   * Schema for each key in `properties`.
+   * Persisted in the project file so editors round-trip correctly.
+   */
+  propertySchema: Record<string, CustomPropertySchema>;
 }
 
 /** A directed connection between two nodes. */
@@ -89,6 +116,9 @@ export interface ExportNode {
   y: number;
   label: string;
   type: NodeType;
+  room_type: string;
+  /** Custom properties exported for backend consumption. */
+  properties: Record<string, unknown>;
 }
 
 export interface ExportEdge {

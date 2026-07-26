@@ -1,4 +1,6 @@
 import type {
+  CustomPropertySchema,
+  CustomPropertyType,
   EdgeType,
   Floor,
   GraphEdge,
@@ -7,6 +9,16 @@ import type {
 } from '@/models/types';
 import { nodeDistance, roundCoord, roundDistance } from '@/utils/geometry';
 import { createEdgeId, createNodeId } from '@/utils/id';
+import {
+  addProperty,
+  cloneNode,
+  cloneProperties,
+  clonePropertySchema,
+  deleteProperty,
+  renameProperty,
+  setPropertySchema,
+  setPropertyValue,
+} from '@/services/propertyService';
 
 export interface CreateNodeInput {
   floor: number;
@@ -14,6 +26,9 @@ export interface CreateNodeInput {
   y: number;
   label?: string;
   type?: NodeType;
+  room_type?: string;
+  properties?: Record<string, unknown>;
+  propertySchema?: Record<string, CustomPropertySchema>;
 }
 
 export function createNode(input: CreateNodeInput): GraphNode {
@@ -24,6 +39,9 @@ export function createNode(input: CreateNodeInput): GraphNode {
     y: roundCoord(input.y),
     label: input.label ?? '',
     type: input.type ?? 'NORMAL',
+    room_type: input.room_type ?? '',
+    properties: cloneProperties(input.properties),
+    propertySchema: clonePropertySchema(input.propertySchema),
   };
 }
 
@@ -38,7 +56,7 @@ export function addNodeToFloor(floor: Floor, input: CreateNodeInput): Floor {
 export function updateNodeOnFloor(
   floor: Floor,
   nodeId: string,
-  patch: Partial<Pick<GraphNode, 'x' | 'y' | 'label' | 'type'>>
+  patch: Partial<Pick<GraphNode, 'x' | 'y' | 'label' | 'type' | 'room_type'>>
 ): Floor {
   const nodes = floor.nodes.map((n) => {
     if (n.id !== nodeId) return n;
@@ -48,6 +66,8 @@ export function updateNodeOnFloor(
       y: patch.y !== undefined ? roundCoord(patch.y) : n.y,
       label: patch.label !== undefined ? patch.label : n.label,
       type: patch.type !== undefined ? patch.type : n.type,
+      room_type:
+        patch.room_type !== undefined ? patch.room_type : n.room_type,
     };
   });
 
@@ -73,6 +93,96 @@ export function updateNodeOnFloor(
       distance: roundDistance(nodeDistance(from, to)),
     };
   });
+
+  return { ...floor, nodes, edges };
+}
+
+/**
+ * Validate a candidate node id on a floor.
+ * Returns an error message, or `null` when the id is acceptable.
+ */
+export function validateNodeId(
+  floor: Floor,
+  candidateId: string,
+  options?: { excludeId?: string }
+): string | null {
+  const id = candidateId.trim();
+  if (!id) {
+    return 'Node ID cannot be empty.';
+  }
+  if (id.includes('\0')) {
+    return 'Node ID contains invalid characters.';
+  }
+  const exclude = options?.excludeId;
+  const duplicate = floor.nodes.some((n) => n.id === id && n.id !== exclude);
+  if (duplicate) {
+    return `Node ID "${id}" is already in use on this floor.`;
+  }
+  return null;
+}
+
+/** Count edges that reference a node as from or to. */
+export function countNodeEdgeReferences(floor: Floor, nodeId: string): number {
+  return floor.edges.reduce((count, edge) => {
+    if (edge.from === nodeId || edge.to === nodeId) {
+      return count + 1;
+    }
+    return count;
+  }, 0);
+}
+
+/**
+ * Rename a node id and rewrite every edge that references it.
+ * Throws if validation fails or the node does not exist.
+ * No-ops (returns the same floor reference) when ids are equal after trim.
+ */
+export function renameNodeIdOnFloor(
+  floor: Floor,
+  oldId: string,
+  newId: string
+): Floor {
+  const nextId = newId.trim();
+  if (nextId === oldId) {
+    return floor;
+  }
+
+  const node = floor.nodes.find((n) => n.id === oldId);
+  if (!node) {
+    throw new Error(`Node "${oldId}" not found.`);
+  }
+
+  const error = validateNodeId(floor, nextId, { excludeId: oldId });
+  if (error) {
+    throw new Error(error);
+  }
+
+  const nodes = floor.nodes.map((n) =>
+    n.id === oldId ? { ...n, id: nextId } : n
+  );
+
+  const edges = floor.edges.map((edge) => {
+    const from = edge.from === oldId ? nextId : edge.from;
+    const to = edge.to === oldId ? nextId : edge.to;
+    if (from === edge.from && to === edge.to) {
+      return edge;
+    }
+    return { ...edge, from, to };
+  });
+
+  // Integrity: every rewritten edge endpoint must resolve.
+  const idSet = new Set(nodes.map((n) => n.id));
+  for (const edge of edges) {
+    if (!idSet.has(edge.from) || !idSet.has(edge.to)) {
+      throw new Error(
+        'Rename aborted: edge reference integrity check failed.'
+      );
+    }
+  }
+
+  // Integrity: no duplicate node ids after rename.
+  if (idSet.size !== nodes.length) {
+    throw new Error('Rename aborted: duplicate node ids detected.');
+  }
 
   return { ...floor, nodes, edges };
 }
@@ -113,6 +223,85 @@ export function moveNodesOnFloor(
   });
 
   return { ...floor, nodes, edges };
+}
+
+/** Apply a pure node transform for custom property mutations. */
+function mapNodeOnFloor(
+  floor: Floor,
+  nodeId: string,
+  transform: (node: GraphNode) => GraphNode
+): Floor {
+  let found = false;
+  const nodes = floor.nodes.map((n) => {
+    if (n.id !== nodeId) return n;
+    found = true;
+    return transform(n);
+  });
+  if (!found) {
+    throw new Error(`Node "${nodeId}" not found.`);
+  }
+  return { ...floor, nodes };
+}
+
+export function addNodePropertyOnFloor(
+  floor: Floor,
+  nodeId: string,
+  key: string,
+  type: CustomPropertyType,
+  options?: string[]
+): Floor {
+  return mapNodeOnFloor(floor, nodeId, (n) => addProperty(n, key, type, options));
+}
+
+export function renameNodePropertyOnFloor(
+  floor: Floor,
+  nodeId: string,
+  oldKey: string,
+  newKey: string
+): Floor {
+  return mapNodeOnFloor(floor, nodeId, (n) => renameProperty(n, oldKey, newKey));
+}
+
+export function deleteNodePropertyOnFloor(
+  floor: Floor,
+  nodeId: string,
+  key: string
+): Floor {
+  return mapNodeOnFloor(floor, nodeId, (n) => deleteProperty(n, key));
+}
+
+export function setNodePropertyValueOnFloor(
+  floor: Floor,
+  nodeId: string,
+  key: string,
+  value: unknown
+): Floor {
+  return mapNodeOnFloor(floor, nodeId, (n) => setPropertyValue(n, key, value));
+}
+
+export function setNodePropertySchemaOnFloor(
+  floor: Floor,
+  nodeId: string,
+  key: string,
+  schema: CustomPropertySchema
+): Floor {
+  return mapNodeOnFloor(floor, nodeId, (n) => setPropertySchema(n, key, schema));
+}
+
+/** Replace the entire custom properties bag (used for bulk / paste). */
+export function replaceNodePropertiesOnFloor(
+  floor: Floor,
+  nodeId: string,
+  properties: Record<string, unknown>,
+  propertySchema: Record<string, CustomPropertySchema>
+): Floor {
+  return mapNodeOnFloor(floor, nodeId, (n) =>
+    cloneNode({
+      ...n,
+      properties,
+      propertySchema,
+    })
+  );
 }
 
 export function deleteNodesFromFloor(floor: Floor, nodeIds: string[]): Floor {

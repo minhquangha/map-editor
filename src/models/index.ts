@@ -2,6 +2,8 @@ export type {
   NodeType,
   EdgeType,
   EditorTool,
+  CustomPropertyType,
+  CustomPropertySchema,
   GraphNode,
   GraphEdge,
   Floor,

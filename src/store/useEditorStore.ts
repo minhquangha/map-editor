@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import type {
+  CustomPropertySchema,
+  CustomPropertyType,
   EdgeType,
   EditorTool,
   Floor,
@@ -17,13 +19,20 @@ import {
   updateFloorInProject,
 } from '@/services/projectService';
 import {
+  addNodePropertyOnFloor,
   addNodeToFloor,
   createEdgeOnFloor,
   deleteEdgesFromFloor,
+  deleteNodePropertyOnFloor,
   deleteNodesFromFloor,
   moveNodesOnFloor,
+  renameNodeIdOnFloor,
+  renameNodePropertyOnFloor,
+  setNodePropertySchemaOnFloor,
+  setNodePropertyValueOnFloor,
   updateEdgeOnFloor,
   updateNodeOnFloor,
+  validateNodeId,
 } from '@/services/graphService';
 import {
   canRedo,
@@ -115,12 +124,29 @@ interface EditorState {
   // ── Graph mutations ──────────────────────────────────────────────────────
   addNodeAt: (worldX: number, worldY: number) => void;
   updateSelectedNode: (
-    patch: Partial<{ x: number; y: number; label: string; type: NodeType }>
+    patch: Partial<{
+      x: number;
+      y: number;
+      label: string;
+      type: NodeType;
+      room_type: string;
+    }>
   ) => void;
   updateNode: (
     nodeId: string,
-    patch: Partial<{ x: number; y: number; label: string; type: NodeType }>
+    patch: Partial<{
+      x: number;
+      y: number;
+      label: string;
+      type: NodeType;
+      room_type: string;
+    }>
   ) => void;
+  /**
+   * Rename a node id, rewrite edge from/to references, and keep selection in sync.
+   * Pushes a single undo snapshot. Throws on validation failure.
+   */
+  renameNodeId: (oldId: string, newId: string) => void;
   moveSelectedNodes: (dx: number, dy: number) => void;
   /** Live move without history (during drag). */
   moveNodesLive: (nodeIds: string[], dx: number, dy: number) => void;
@@ -132,6 +158,22 @@ interface EditorState {
   updateEdge: (
     edgeId: string,
     patch: Partial<{ edgeType: EdgeType; bidirectional: boolean; distance: number }>
+  ) => void;
+
+  // ── Custom node properties ───────────────────────────────────────────────
+  addNodeProperty: (
+    nodeId: string,
+    key: string,
+    type: CustomPropertyType,
+    options?: string[]
+  ) => void;
+  renameNodeProperty: (nodeId: string, oldKey: string, newKey: string) => void;
+  deleteNodeProperty: (nodeId: string, key: string) => void;
+  setNodePropertyValue: (nodeId: string, key: string, value: unknown) => void;
+  setNodePropertySchema: (
+    nodeId: string,
+    key: string,
+    schema: CustomPropertySchema
   ) => void;
 }
 
@@ -551,6 +593,78 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }));
   },
 
+  renameNodeId: (oldId, newId) => {
+    const trimmed = newId.trim();
+    if (trimmed === oldId) {
+      return;
+    }
+
+    const floorId = get().project.activeFloorId;
+    const floor = get().getActiveFloor();
+
+    // Validate before touching history so failed renames cannot pollute undo.
+    const validationError = validateNodeId(floor, trimmed, {
+      excludeId: oldId,
+    });
+    if (validationError) {
+      set({
+        status: { message: validationError, severity: 'error' },
+      });
+      throw new Error(validationError);
+    }
+    if (!floor.nodes.some((n) => n.id === oldId)) {
+      const message = `Node "${oldId}" not found.`;
+      set({ status: { message, severity: 'error' } });
+      throw new Error(message);
+    }
+
+    // Apply pure graph transform first; only then commit one undo snapshot.
+    let nextFloor;
+    try {
+      nextFloor = renameNodeIdOnFloor(floor, oldId, trimmed);
+    } catch (err) {
+      set({
+        status: {
+          message: err instanceof Error ? err.message : 'Cannot rename node ID',
+          severity: 'error',
+        },
+      });
+      throw err;
+    }
+
+    if (nextFloor === floor) {
+      return;
+    }
+
+    get().commitHistory();
+    set((s) => {
+      const selection: SelectionState = {
+        nodeIds: s.selection.nodeIds.map((id) =>
+          id === oldId ? trimmed : id
+        ),
+        edgeIds: s.selection.edgeIds,
+      };
+      const edgeDraftFromId =
+        s.edgeDraftFromId === oldId ? trimmed : s.edgeDraftFromId;
+      return {
+        project: {
+          ...s.project,
+          floors: s.project.floors.map((f) =>
+            f.id === floorId ? nextFloor : f
+          ),
+          updatedAt: new Date().toISOString(),
+        },
+        selection,
+        edgeDraftFromId,
+        isDirty: true,
+        status: {
+          message: `Node ID renamed: ${oldId} → ${trimmed}`,
+          severity: 'success',
+        },
+      };
+    });
+  },
+
   moveSelectedNodes: (dx, dy) => {
     const ids = get().selection.nodeIds;
     if (ids.length === 0) return;
@@ -648,6 +762,107 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       ),
       isDirty: true,
     }));
+  },
+
+  addNodeProperty: (nodeId, key, type, options) => {
+    try {
+      get().commitHistory();
+      const floorId = get().project.activeFloorId;
+      set((s) => ({
+        project: updateFloorInProject(s.project, floorId, (f) =>
+          addNodePropertyOnFloor(f, nodeId, key, type, options)
+        ),
+        isDirty: true,
+        status: { message: `Property "${key}" added`, severity: 'info' },
+      }));
+    } catch (err) {
+      set({
+        status: {
+          message: err instanceof Error ? err.message : 'Cannot add property',
+          severity: 'error',
+        },
+      });
+      throw err;
+    }
+  },
+
+  renameNodeProperty: (nodeId, oldKey, newKey) => {
+    try {
+      get().commitHistory();
+      const floorId = get().project.activeFloorId;
+      set((s) => ({
+        project: updateFloorInProject(s.project, floorId, (f) =>
+          renameNodePropertyOnFloor(f, nodeId, oldKey, newKey)
+        ),
+        isDirty: true,
+        status: {
+          message: `Property renamed to "${newKey}"`,
+          severity: 'info',
+        },
+      }));
+    } catch (err) {
+      set({
+        status: {
+          message: err instanceof Error ? err.message : 'Cannot rename property',
+          severity: 'error',
+        },
+      });
+      throw err;
+    }
+  },
+
+  deleteNodeProperty: (nodeId, key) => {
+    get().commitHistory();
+    const floorId = get().project.activeFloorId;
+    set((s) => ({
+      project: updateFloorInProject(s.project, floorId, (f) =>
+        deleteNodePropertyOnFloor(f, nodeId, key)
+      ),
+      isDirty: true,
+      status: { message: `Property "${key}" removed`, severity: 'info' },
+    }));
+  },
+
+  setNodePropertyValue: (nodeId, key, value) => {
+    try {
+      get().commitHistory();
+      const floorId = get().project.activeFloorId;
+      set((s) => ({
+        project: updateFloorInProject(s.project, floorId, (f) =>
+          setNodePropertyValueOnFloor(f, nodeId, key, value)
+        ),
+        isDirty: true,
+      }));
+    } catch (err) {
+      set({
+        status: {
+          message: err instanceof Error ? err.message : 'Cannot update property',
+          severity: 'error',
+        },
+      });
+    }
+  },
+
+  setNodePropertySchema: (nodeId, key, schema) => {
+    try {
+      get().commitHistory();
+      const floorId = get().project.activeFloorId;
+      set((s) => ({
+        project: updateFloorInProject(s.project, floorId, (f) =>
+          setNodePropertySchemaOnFloor(f, nodeId, key, schema)
+        ),
+        isDirty: true,
+      }));
+    } catch (err) {
+      set({
+        status: {
+          message:
+            err instanceof Error ? err.message : 'Cannot update property type',
+          severity: 'error',
+        },
+      });
+      throw err;
+    }
   },
 }));
 

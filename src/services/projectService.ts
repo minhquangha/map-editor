@@ -1,5 +1,9 @@
-import type { Floor, MapEditorProject } from '@/models/types';
+import type { Floor, GraphNode, MapEditorProject } from '@/models/types';
 import { defaultFloorName, MAX_FLOORS, MIN_FLOOR, PROJECT_VERSION } from '@/utils/constants';
+import {
+  cloneNode,
+  parseNodeProperties,
+} from '@/services/propertyService';
 
 /** Create an empty floor with independent origin at (0,0). */
 export function createFloor(id: number, name?: string): Floor {
@@ -33,7 +37,7 @@ export function createEmptyProject(name = 'Untitled Project'): MapEditorProject 
 export function cloneFloors(floors: Floor[]): Floor[] {
   return floors.map((f) => ({
     ...f,
-    nodes: f.nodes.map((n) => ({ ...n })),
+    nodes: f.nodes.map((n) => cloneNode(n)),
     edges: f.edges.map((e) => ({ ...e })),
   }));
 }
@@ -95,14 +99,7 @@ export function parseProject(content: string): MapEditorProject {
       imageWidth: Number(floor.imageWidth) || 0,
       imageHeight: Number(floor.imageHeight) || 0,
       nodes: Array.isArray(floor.nodes)
-        ? floor.nodes.map((n) => ({
-            id: String(n.id),
-            floor: Number(n.floor) || id,
-            x: Number(n.x) || 0,
-            y: Number(n.y) || 0,
-            label: String(n.label ?? ''),
-            type: n.type || 'NORMAL',
-          }))
+        ? floor.nodes.map((n) => parseGraphNode(n, id))
         : [],
       edges: Array.isArray(floor.edges)
         ? floor.edges.map((e) => ({
@@ -191,5 +188,28 @@ export function updateFloorInProject(
     ...project,
     floors: project.floors.map((f) => (f.id === floorId ? updater(f) : f)),
     updatedAt: new Date().toISOString(),
+  };
+}
+
+/** Normalize a raw node from disk into a GraphNode (supports legacy files). */
+function parseGraphNode(raw: unknown, floorId: number): GraphNode {
+  const n = (raw && typeof raw === 'object' ? raw : {}) as Partial<GraphNode> &
+    Record<string, unknown>;
+
+  const { properties, propertySchema } = parseNodeProperties(
+    n.properties,
+    n.propertySchema
+  );
+
+  return {
+    id: String(n.id ?? ''),
+    floor: Number(n.floor) || floorId,
+    x: Number(n.x) || 0,
+    y: Number(n.y) || 0,
+    label: String(n.label ?? ''),
+    type: (n.type as GraphNode['type']) || 'NORMAL',
+    room_type: String(n.room_type ?? ''),
+    properties,
+    propertySchema,
   };
 }

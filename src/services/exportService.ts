@@ -5,10 +5,12 @@ import type {
   ExportNode,
   MapEditorProject,
 } from '@/models/types';
+import { exportProperties } from '@/services/propertyService';
 
 /**
  * Build the backend-facing graph JSON.
  * Coordinates remain in image pixel space (origin top-left).
+ * Custom node properties are included for pathfinding backends.
  */
 export function buildExportGraph(project: MapEditorProject): ExportGraph {
   const floors: ExportFloor[] = project.floors
@@ -22,6 +24,8 @@ export function buildExportGraph(project: MapEditorProject): ExportGraph {
         y: n.y,
         label: n.label,
         type: n.type,
+        room_type: n.room_type ?? '',
+        properties: exportProperties(n),
       }));
 
       const edges: ExportEdge[] = floor.edges.map((e) => ({
