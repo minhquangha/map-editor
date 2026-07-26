@@ -11,11 +11,10 @@ import { exportProperties } from '@/services/propertyService';
  * Build the backend-facing graph JSON.
  * Coordinates remain in image pixel space (origin top-left).
  * Custom node properties are included for pathfinding backends.
+ * Floors are emitted in the project's own (user-defined) order.
  */
 export function buildExportGraph(project: MapEditorProject): ExportGraph {
   const floors: ExportFloor[] = project.floors
-    .slice()
-    .sort((a, b) => a.id - b.id)
     .map((floor) => {
       const nodes: ExportNode[] = floor.nodes.map((n) => ({
         id: n.id,

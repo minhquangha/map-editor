@@ -16,6 +16,7 @@ import {
   createEmptyProject,
   getActiveFloor,
   removeFloorFromProject,
+  reorderFloorInProject,
   updateFloorInProject,
 } from '@/services/projectService';
 import {
@@ -119,6 +120,8 @@ interface EditorState {
   addFloor: () => void;
   removeFloor: (floorId: number) => void;
   renameFloor: (floorId: number, name: string) => void;
+  /** Move a floor within the floor list (`delta` of -1 / +1 = up / down). */
+  moveFloor: (floorId: number, delta: number) => void;
   openImageForActiveFloor: () => Promise<void>;
 
   // ── Graph mutations ──────────────────────────────────────────────────────
@@ -487,13 +490,17 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   removeFloor: (floorId) => {
     try {
+      const name = get().project.floors.find((f) => f.id === floorId)?.name;
       get().commitHistory();
       const project = removeFloorFromProject(get().project, floorId);
       set({
         project,
         isDirty: true,
         selection: emptySelection(),
-        status: { message: `Removed floor ${floorId}`, severity: 'info' },
+        status: {
+          message: `Removed ${name ?? `floor ${floorId}`}`,
+          severity: 'info',
+        },
       });
     } catch (err) {
       set({
@@ -514,6 +521,24 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       })),
       isDirty: true,
     }));
+  },
+
+  moveFloor: (floorId, delta) => {
+    const { project } = get();
+    const index = project.floors.findIndex((f) => f.id === floorId);
+    if (index === -1) return;
+
+    // Validate before committing history so no-op moves cannot pollute undo.
+    const target = index + delta;
+    if (target < 0 || target >= project.floors.length || target === index) {
+      return;
+    }
+
+    get().commitHistory();
+    set({
+      project: reorderFloorInProject(project, floorId, target),
+      isDirty: true,
+    });
   },
 
   openImageForActiveFloor: async () => {

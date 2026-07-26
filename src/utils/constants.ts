@@ -4,7 +4,7 @@ export const APP_NAME = 'Map Editor';
 export const PROJECT_EXTENSION = 'mapeditor';
 export const PROJECT_VERSION = 1 as const;
 
-export const MAX_FLOORS = 7;
+/** Lowest valid floor id. Floor count is unlimited. */
 export const MIN_FLOOR = 1;
 
 export const NODE_RADIUS = 8;

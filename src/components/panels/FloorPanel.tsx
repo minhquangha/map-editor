@@ -12,11 +12,12 @@ import {
   Typography,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
+import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
+import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import ImageIcon from '@mui/icons-material/Image';
 import { useState } from 'react';
 import { useEditorStore } from '@/store/useEditorStore';
-import { MAX_FLOORS } from '@/utils/constants';
 
 export function FloorPanel() {
   const project = useEditorStore((s) => s.project);
@@ -24,13 +25,15 @@ export function FloorPanel() {
   const addFloor = useEditorStore((s) => s.addFloor);
   const removeFloor = useEditorStore((s) => s.removeFloor);
   const renameFloor = useEditorStore((s) => s.renameFloor);
+  const moveFloor = useEditorStore((s) => s.moveFloor);
   const openImage = useEditorStore((s) => s.openImageForActiveFloor);
   const setProjectName = useEditorStore((s) => s.setProjectName);
 
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editName, setEditName] = useState('');
 
-  const floors = [...project.floors].sort((a, b) => a.id - b.id);
+  // List order is user-defined (drag-free reorder via the arrow buttons).
+  const floors = project.floors;
 
   return (
     <Box sx={{ p: 1.5, height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -52,16 +55,11 @@ export function FloorPanel() {
 
       <Stack direction="row" alignItems="center" justifyContent="space-between" mb={1}>
         <Typography variant="overline" color="text.secondary" sx={{ letterSpacing: 1 }}>
-          Floors ({floors.length}/{MAX_FLOORS})
+          Floors ({floors.length})
         </Typography>
         <Tooltip title="Add floor">
           <span>
-            <IconButton
-              size="small"
-              onClick={addFloor}
-              disabled={floors.length >= MAX_FLOORS}
-              color="primary"
-            >
+            <IconButton size="small" onClick={addFloor} color="primary">
               <AddIcon fontSize="small" />
             </IconButton>
           </span>
@@ -69,7 +67,7 @@ export function FloorPanel() {
       </Stack>
 
       <List dense sx={{ flex: 1, overflow: 'auto', mx: -1 }}>
-        {floors.map((floor) => {
+        {floors.map((floor, index) => {
           const selected = floor.id === project.activeFloorId;
           const nodeCount = floor.nodes.length;
           const edgeCount = floor.edges.length;
@@ -83,7 +81,7 @@ export function FloorPanel() {
                 setEditingId(floor.id);
                 setEditName(floor.name);
               }}
-              sx={{ borderRadius: 1, mb: 0.5 }}
+              sx={{ borderRadius: 1, mb: 0.5, pr: 11 }}
             >
               {editingId === floor.id ? (
                 <TextField
@@ -118,21 +116,51 @@ export function FloorPanel() {
                 />
               )}
               <ListItemSecondaryAction>
-                <Tooltip title="Remove floor">
-                  <span>
-                    <IconButton
-                      edge="end"
-                      size="small"
-                      disabled={floors.length <= 1}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        removeFloor(floor.id);
-                      }}
-                    >
-                      <DeleteOutlineIcon fontSize="small" />
-                    </IconButton>
-                  </span>
-                </Tooltip>
+                <Stack direction="row" spacing={0}>
+                  <Tooltip title="Move floor up">
+                    <span>
+                      <IconButton
+                        size="small"
+                        disabled={index === 0}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          moveFloor(floor.id, -1);
+                        }}
+                      >
+                        <ArrowUpwardIcon fontSize="small" />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                  <Tooltip title="Move floor down">
+                    <span>
+                      <IconButton
+                        size="small"
+                        disabled={index === floors.length - 1}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          moveFloor(floor.id, 1);
+                        }}
+                      >
+                        <ArrowDownwardIcon fontSize="small" />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                  <Tooltip title="Remove floor">
+                    <span>
+                      <IconButton
+                        edge="end"
+                        size="small"
+                        disabled={floors.length <= 1}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeFloor(floor.id);
+                        }}
+                      >
+                        <DeleteOutlineIcon fontSize="small" />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                </Stack>
               </ListItemSecondaryAction>
             </ListItemButton>
           );

@@ -1,5 +1,5 @@
 import type { Floor, GraphNode, MapEditorProject } from '@/models/types';
-import { defaultFloorName, MAX_FLOORS, MIN_FLOOR, PROJECT_VERSION } from '@/utils/constants';
+import { defaultFloorName, MIN_FLOOR, PROJECT_VERSION } from '@/utils/constants';
 import {
   cloneNode,
   parseNodeProperties,
@@ -88,7 +88,7 @@ export function parseProject(content: string): MapEditorProject {
     }
     const floor = f as Floor;
     const id = Number(floor.id);
-    if (!Number.isFinite(id) || id < MIN_FLOOR || id > MAX_FLOORS) {
+    if (!Number.isFinite(id) || id < MIN_FLOOR) {
       throw new Error(`Invalid floor id: ${String(floor.id)}`);
     }
     return {
@@ -128,23 +128,53 @@ export function parseProject(content: string): MapEditorProject {
   };
 }
 
-/** Add next available floor (max 7). */
+/** Append a new floor. The floor count is unlimited. */
 export function addFloorToProject(project: MapEditorProject): MapEditorProject {
-  if (project.floors.length >= MAX_FLOORS) {
-    throw new Error(`Maximum of ${MAX_FLOORS} floors allowed.`);
-  }
   const used = new Set(project.floors.map((f) => f.id));
+  // Lowest free id, so ids freed by deletion get reused. Always terminates:
+  // `used` cannot cover every id in [MIN_FLOOR, MIN_FLOOR + used.size].
   let nextId = MIN_FLOOR;
-  while (used.has(nextId) && nextId <= MAX_FLOORS) {
+  while (used.has(nextId)) {
     nextId += 1;
-  }
-  if (nextId > MAX_FLOORS) {
-    throw new Error(`Maximum of ${MAX_FLOORS} floors allowed.`);
   }
   return {
     ...project,
     floors: [...project.floors, createFloor(nextId)],
     activeFloorId: nextId,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Move a floor to another position in the floor list.
+ * List order is user-defined and is what the UI and export follow.
+ * `targetIndex` is clamped to the list bounds.
+ */
+export function reorderFloorInProject(
+  project: MapEditorProject,
+  floorId: number,
+  targetIndex: number
+): MapEditorProject {
+  const fromIndex = project.floors.findIndex((f) => f.id === floorId);
+  if (fromIndex === -1) {
+    throw new Error(`Floor ${floorId} not found.`);
+  }
+
+  const toIndex = Math.max(
+    0,
+    Math.min(project.floors.length - 1, targetIndex)
+  );
+  if (toIndex === fromIndex) {
+    return project;
+  }
+
+  const floors = [...project.floors];
+  const [moved] = floors.splice(fromIndex, 1);
+  floors.splice(toIndex, 0, moved);
+
+  return {
+    ...project,
+    floors,
     updatedAt: new Date().toISOString(),
   };
 }

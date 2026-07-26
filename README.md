@@ -14,7 +14,7 @@ This is **not** an indoor navigation client. Its only job is to produce clean gr
 | **Canvas** | Infinite canvas, zoom (wheel / Ctrl+wheel), pan (middle mouse, Space, Pan tool), fit to screen |
 | **Nodes** | Create, move, delete, rename, multi-select · types: NORMAL, ROOM, ELEVATOR, STAIR, ENTRANCE, EXIT |
 | **Edges** | Connect two nodes · Euclidean distance · NORMAL / STAIR / ELEVATOR · bi-directional or one-way |
-| **Floors** | Up to 7 independent floors, each with own image, nodes, edges, origin (0,0) top-left |
+| **Floors** | Unlimited independent floors — add, rename, delete, reorder · each with own image, nodes, edges, origin (0,0) top-left |
 | **Project** | `.mapeditor` format · open / save / save as · auto-save |
 | **Export** | Graph JSON for pathfinding backends |
 | **UX** | Dark mode, dock panels, undo/redo, keyboard shortcuts |
@@ -125,7 +125,7 @@ npm run electron:build:dir
 4. Set node **type** and **label** in the properties panel
 5. **Add Edge** tool — click node A, then node B
 6. Distances are calculated automatically (pixel Euclidean)
-7. Switch floors (1–7), repeat
+7. Add / switch floors in the Floors panel, repeat
 8. **Save** project · **Export JSON** for the pathfinding backend
 
 ---
