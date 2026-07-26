@@ -349,7 +349,12 @@ function NodeProperties({
   );
 }
 
-function EdgeProperties({ edge }: { edge: GraphEdge }) {
+/**
+ * The single edge editor. Self-contained — it takes an edge and drives every
+ * change through the store, so it can be rendered from the right-hand dock or
+ * from the Connection Manager without duplicating any editing logic.
+ */
+export function EdgeProperties({ edge }: { edge: GraphEdge }) {
   const project = useEditorStore((s) => s.project);
   const updateEdge = useEditorStore((s) => s.updateEdge);
   const renameEdgeId = useEditorStore((s) => s.renameEdgeId);

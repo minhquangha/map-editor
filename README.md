@@ -15,6 +15,7 @@ This is **not** an indoor navigation client. Its only job is to produce clean gr
 | **Nodes** | Create, move, delete, rename, multi-select · types: NORMAL, ROOM, ELEVATOR, STAIR, ENTRANCE, EXIT |
 | **Edges** | First-class objects: editable id, endpoints, type, weight, direction, metadata · same-floor **or cross-floor** · 8 types (Normal, Elevator, Stairs, Escalator, Bridge, Tunnel, Outdoor, Custom) |
 | **Navigation** | Node **Connections** list and edge **Go to source / destination** jump across floors and buildings, IDE-style |
+| **Connection Manager** | Central table of every cross-floor connection · view, edit, delete, go to either end |
 | **Buildings** | Unlimited buildings — add, rename, describe, duplicate, delete, reorder |
 | **Floors** | Unlimited floors per building — add, rename, delete, reorder · each with own image, nodes, edges, origin (0,0) top-left |
 | **Project** | `.mapeditor` format · open / save / save as · auto-save |
@@ -58,6 +59,23 @@ meaningless. Cross-floor edges are therefore **never drawn**. Instead:
 
 To draw one: pick the Add Edge tool, click the source node, switch floor or
 building, then click the destination. The half-drawn edge survives the switch.
+
+### Connection Manager
+
+The toolbar's hub button opens a table of **every cross-floor connection** in
+the project — name, type, source and destination (building · floor · node),
+and weight. Same-floor edges are deliberately excluded; they are already
+visible on the canvas.
+
+Per row: **go to source**, **go to destination**, **delete**. Selecting a row
+opens the edge in the same `EdgeProperties` editor the right-hand dock uses,
+so there is one editing implementation rather than two. Selection is shared
+with the canvas, and both the table and the canvas read the same store — a
+change made in either place shows up in the other immediately.
+
+The "Name" column shows `metadata.name` when the edge has one, otherwise the
+edge id. Edges have no dedicated name field; the free-form metadata bag serves
+that purpose without a schema change.
 
 ---
 

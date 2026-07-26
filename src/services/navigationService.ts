@@ -1,5 +1,6 @@
 import type {
   Building,
+  CrossFloorConnection,
   Floor,
   GraphEdge,
   GraphNode,
@@ -195,6 +196,74 @@ export function getNodeConnections(
   });
 
   return connections;
+}
+
+/**
+ * Every cross-floor edge in the project, with both endpoints resolved.
+ *
+ * Same-floor edges are excluded — they are visible on the canvas, so they do
+ * not need a central list. Edges with an unresolvable endpoint are skipped
+ * rather than listed broken.
+ *
+ * Ordered by source building, then source floor, then destination floor, so
+ * the list follows the project tree rather than edge creation order.
+ */
+export function listCrossFloorConnections(
+  project: MapEditorProject
+): CrossFloorConnection[] {
+  const index = buildNodeIndex(project);
+  const buildingOrder = new Map(
+    project.buildings.map((b, i) => [b.id, i] as const)
+  );
+  const floorOrder = new Map<number, number>();
+  let seq = 0;
+  for (const building of project.buildings) {
+    for (const floor of building.floors) floorOrder.set(floor.id, seq++);
+  }
+
+  const connections: CrossFloorConnection[] = [];
+
+  for (const edge of project.edges) {
+    const from = index.get(edge.from);
+    const to = index.get(edge.to);
+    if (!from || !to) continue;
+    if (from.floor.id === to.floor.id) continue;
+
+    connections.push({
+      edge,
+      from,
+      to,
+      crossBuilding: from.building.id !== to.building.id,
+    });
+  }
+
+  connections.sort((a, b) => {
+    const byBuilding =
+      (buildingOrder.get(a.from.building.id) ?? 0) -
+      (buildingOrder.get(b.from.building.id) ?? 0);
+    if (byBuilding !== 0) return byBuilding;
+
+    const byFromFloor =
+      (floorOrder.get(a.from.floor.id) ?? 0) - (floorOrder.get(b.from.floor.id) ?? 0);
+    if (byFromFloor !== 0) return byFromFloor;
+
+    return (
+      (floorOrder.get(a.to.floor.id) ?? 0) - (floorOrder.get(b.to.floor.id) ?? 0)
+    );
+  });
+
+  return connections;
+}
+
+/**
+ * Display name for an edge.
+ *
+ * Edges have no dedicated `name` field; a `name` string in the free-form
+ * metadata bag is used when present, otherwise the id stands in.
+ */
+export function edgeDisplayName(edge: GraphEdge): string {
+  const name = edge.metadata?.name;
+  return typeof name === 'string' && name.trim() ? name.trim() : edge.id;
 }
 
 /** Display label for a node: its label, falling back to a short id. */

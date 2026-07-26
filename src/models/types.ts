@@ -169,6 +169,15 @@ export interface NodeLocation {
   building: Building;
 }
 
+/** A cross-floor edge with both endpoints resolved, for the Connection Manager. */
+export interface CrossFloorConnection {
+  edge: GraphEdge;
+  from: NodeLocation;
+  to: NodeLocation;
+  /** True when the endpoints sit in different buildings. */
+  crossBuilding: boolean;
+}
+
 /** One edge as seen from a node, for the Connections panel. */
 export interface NodeConnection {
   edge: GraphEdge;

@@ -229,6 +229,8 @@ interface EditorState {
   cancelPendingEdge: () => void;
   updateSelectedEdge: (patch: EdgePatch) => void;
   updateEdge: (edgeId: string, patch: EdgePatch) => void;
+  /** Delete edges by id, independent of the current selection. */
+  deleteEdges: (edgeIds: string[]) => void;
   /** Rename an edge id. Throws on blank or colliding ids. */
   renameEdgeId: (oldId: string, newId: string) => void;
   /** Repoint an edge at different endpoints (may cross floors). */
@@ -1059,6 +1061,27 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       project: updateEdgeInProject(s.project, edgeId, patch),
       isDirty: true,
     }));
+  },
+
+  deleteEdges: (edgeIds) => {
+    if (edgeIds.length === 0) return;
+    get().commitHistory();
+    set((s) => {
+      const removed = new Set(edgeIds);
+      return {
+        project: deleteEdgesInProject(s.project, edgeIds),
+        // Drop the removed edges from the selection so nothing dangles.
+        selection: {
+          nodeIds: s.selection.nodeIds,
+          edgeIds: s.selection.edgeIds.filter((id) => !removed.has(id)),
+        },
+        isDirty: true,
+        status: {
+          message: `Deleted ${edgeIds.length} edge${edgeIds.length === 1 ? '' : 's'}`,
+          severity: 'info',
+        },
+      };
+    });
   },
 
   renameEdgeId: (oldId, newId) => {

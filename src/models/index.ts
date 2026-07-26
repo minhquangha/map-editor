@@ -12,6 +12,7 @@ export type {
   ProjectMetadata,
   NodeLocation,
   NodeConnection,
+  CrossFloorConnection,
   MapEditorProject,
   ExportGraph,
   ExportBuilding,

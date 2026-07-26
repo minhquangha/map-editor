@@ -31,14 +31,17 @@ import ZoomOutIcon from '@mui/icons-material/ZoomOut';
 import LabelIcon from '@mui/icons-material/Label';
 import StraightenIcon from '@mui/icons-material/Straighten';
 import DataObjectIcon from '@mui/icons-material/DataObject';
+import HubIcon from '@mui/icons-material/Hub';
 import { useState } from 'react';
 import { useEditorStore } from '@/store/useEditorStore';
+import { ConnectionManagerDialog } from '@/components/panels/ConnectionManagerDialog';
 import { JsonEditorDialog } from '@/components/panels/JsonEditorDialog';
 import type { EditorTool, NodeType } from '@/models/types';
 import { NODE_TYPE_OPTIONS } from '@/utils/constants';
 
 export function Toolbar() {
   const [jsonOpen, setJsonOpen] = useState(false);
+  const [connectionsOpen, setConnectionsOpen] = useState(false);
   const tool = useEditorStore((s) => s.tool);
   const defaultNodeType = useEditorStore((s) => s.defaultNodeType);
   const project = useEditorStore((s) => s.project);
@@ -124,6 +127,11 @@ export function Toolbar() {
           <Tooltip title="Export graph JSON (Ctrl+E)">
             <IconButton onClick={() => void exportJson()}>
               <FileDownloadIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Connection Manager — cross-floor connections">
+            <IconButton onClick={() => setConnectionsOpen(true)}>
+              <HubIcon fontSize="small" />
             </IconButton>
           </Tooltip>
           <Tooltip title="Edit project JSON">
@@ -266,6 +274,10 @@ export function Toolbar() {
         </Stack>
       </MuiToolbar>
 
+      <ConnectionManagerDialog
+        open={connectionsOpen}
+        onClose={() => setConnectionsOpen(false)}
+      />
       <JsonEditorDialog open={jsonOpen} onClose={() => setJsonOpen(false)} />
     </AppBar>
   );
