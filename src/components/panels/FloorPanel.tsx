@@ -1,6 +1,5 @@
 import {
   Box,
-  Button,
   IconButton,
   List,
   ListItemButton,
@@ -9,173 +8,155 @@ import {
   Stack,
   TextField,
   Tooltip,
-  Typography,
 } from '@mui/material';
-import AddIcon from '@mui/icons-material/Add';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
-import ImageIcon from '@mui/icons-material/Image';
-import { useState } from 'react';
+import { memo, useState } from 'react';
+import type { Building } from '@/models/types';
 import { useEditorStore } from '@/store/useEditorStore';
 
-export function FloorPanel() {
-  const project = useEditorStore((s) => s.project);
+interface FloorPanelProps {
+  building: Building;
+  /** Active floor id, or null when the active floor is in another building. */
+  activeFloorId: number | null;
+}
+
+/**
+ * Floor list for a single building.
+ *
+ * Rendered once per building by `BuildingPanel`. Order is array order
+ * (user-defined via the arrow buttons), never sorted by id.
+ */
+function FloorPanelBase({ building, activeFloorId }: FloorPanelProps) {
   const setActiveFloor = useEditorStore((s) => s.setActiveFloor);
-  const addFloor = useEditorStore((s) => s.addFloor);
   const removeFloor = useEditorStore((s) => s.removeFloor);
   const renameFloor = useEditorStore((s) => s.renameFloor);
   const moveFloor = useEditorStore((s) => s.moveFloor);
-  const openImage = useEditorStore((s) => s.openImageForActiveFloor);
-  const setProjectName = useEditorStore((s) => s.setProjectName);
 
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editName, setEditName] = useState('');
 
-  // List order is user-defined (drag-free reorder via the arrow buttons).
-  const floors = project.floors;
+  const commitRename = (floorId: number) => {
+    if (editName.trim()) renameFloor(floorId, editName.trim());
+    setEditingId(null);
+  };
 
   return (
-    <Box sx={{ p: 1.5, height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <Typography
-        variant="overline"
-        color="text.secondary"
-        sx={{ letterSpacing: 1, display: 'block', mb: 1 }}
-      >
-        Project
-      </Typography>
+    <List dense disablePadding sx={{ pl: 1.5 }}>
+      {building.floors.map((floor, index) => {
+        const selected = floor.id === activeFloorId;
 
-      <TextField
-        label="Project name"
-        value={project.name}
-        onChange={(e) => setProjectName(e.target.value)}
-        size="small"
-        sx={{ mb: 2 }}
-      />
+        return (
+          <ListItemButton
+            key={floor.id}
+            selected={selected}
+            onClick={() => setActiveFloor(floor.id)}
+            onDoubleClick={() => {
+              setEditingId(floor.id);
+              setEditName(floor.name);
+            }}
+            sx={{ borderRadius: 1, mb: 0.25, py: 0.25, pr: 10 }}
+          >
+            {editingId === floor.id ? (
+              <TextField
+                autoFocus
+                size="small"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                onBlur={() => commitRename(floor.id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitRename(floor.id);
+                  if (e.key === 'Escape') setEditingId(null);
+                }}
+                onClick={(e) => e.stopPropagation()}
+                fullWidth
+              />
+            ) : (
+              <ListItemText
+                primary={floor.name}
+                secondary={
+                  floor.imageName
+                    ? `${floor.imageName} · ${floor.nodes.length}n / ${floor.edges.length}e`
+                    : `No image · ${floor.nodes.length}n / ${floor.edges.length}e`
+                }
+                primaryTypographyProps={{
+                  variant: 'body2',
+                  fontWeight: selected ? 600 : 400,
+                  noWrap: true,
+                }}
+                secondaryTypographyProps={{ variant: 'caption', noWrap: true }}
+              />
+            )}
 
-      <Stack direction="row" alignItems="center" justifyContent="space-between" mb={1}>
-        <Typography variant="overline" color="text.secondary" sx={{ letterSpacing: 1 }}>
-          Floors ({floors.length})
-        </Typography>
-        <Tooltip title="Add floor">
-          <span>
-            <IconButton size="small" onClick={addFloor} color="primary">
-              <AddIcon fontSize="small" />
-            </IconButton>
-          </span>
-        </Tooltip>
-      </Stack>
-
-      <List dense sx={{ flex: 1, overflow: 'auto', mx: -1 }}>
-        {floors.map((floor, index) => {
-          const selected = floor.id === project.activeFloorId;
-          const nodeCount = floor.nodes.length;
-          const edgeCount = floor.edges.length;
-
-          return (
-            <ListItemButton
-              key={floor.id}
-              selected={selected}
-              onClick={() => setActiveFloor(floor.id)}
-              onDoubleClick={() => {
-                setEditingId(floor.id);
-                setEditName(floor.name);
-              }}
-              sx={{ borderRadius: 1, mb: 0.5, pr: 11 }}
-            >
-              {editingId === floor.id ? (
-                <TextField
-                  autoFocus
-                  size="small"
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  onBlur={() => {
-                    if (editName.trim()) renameFloor(floor.id, editName.trim());
-                    setEditingId(null);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      if (editName.trim()) renameFloor(floor.id, editName.trim());
-                      setEditingId(null);
-                    }
-                    if (e.key === 'Escape') setEditingId(null);
-                  }}
-                  onClick={(e) => e.stopPropagation()}
-                  fullWidth
-                />
-              ) : (
-                <ListItemText
-                  primary={floor.name}
-                  secondary={
-                    floor.imageName
-                      ? `${floor.imageName} · ${nodeCount}n / ${edgeCount}e`
-                      : `No image · ${nodeCount}n / ${edgeCount}e`
+            <ListItemSecondaryAction>
+              <Stack direction="row" spacing={0}>
+                <Tooltip title="Move floor up">
+                  <span>
+                    <IconButton
+                      size="small"
+                      disabled={index === 0}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        moveFloor(floor.id, -1);
+                      }}
+                    >
+                      <ArrowUpwardIcon sx={{ fontSize: 16 }} />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+                <Tooltip title="Move floor down">
+                  <span>
+                    <IconButton
+                      size="small"
+                      disabled={index === building.floors.length - 1}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        moveFloor(floor.id, 1);
+                      }}
+                    >
+                      <ArrowDownwardIcon sx={{ fontSize: 16 }} />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+                <Tooltip
+                  title={
+                    building.floors.length <= 1
+                      ? 'A building must keep at least one floor'
+                      : 'Remove floor'
                   }
-                  primaryTypographyProps={{ fontWeight: selected ? 600 : 400 }}
-                  secondaryTypographyProps={{ noWrap: true }}
-                />
-              )}
-              <ListItemSecondaryAction>
-                <Stack direction="row" spacing={0}>
-                  <Tooltip title="Move floor up">
-                    <span>
-                      <IconButton
-                        size="small"
-                        disabled={index === 0}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          moveFloor(floor.id, -1);
-                        }}
-                      >
-                        <ArrowUpwardIcon fontSize="small" />
-                      </IconButton>
-                    </span>
-                  </Tooltip>
-                  <Tooltip title="Move floor down">
-                    <span>
-                      <IconButton
-                        size="small"
-                        disabled={index === floors.length - 1}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          moveFloor(floor.id, 1);
-                        }}
-                      >
-                        <ArrowDownwardIcon fontSize="small" />
-                      </IconButton>
-                    </span>
-                  </Tooltip>
-                  <Tooltip title="Remove floor">
-                    <span>
-                      <IconButton
-                        edge="end"
-                        size="small"
-                        disabled={floors.length <= 1}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          removeFloor(floor.id);
-                        }}
-                      >
-                        <DeleteOutlineIcon fontSize="small" />
-                      </IconButton>
-                    </span>
-                  </Tooltip>
-                </Stack>
-              </ListItemSecondaryAction>
-            </ListItemButton>
-          );
-        })}
-      </List>
+                >
+                  <span>
+                    <IconButton
+                      edge="end"
+                      size="small"
+                      disabled={building.floors.length <= 1}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeFloor(floor.id);
+                      }}
+                    >
+                      <DeleteOutlineIcon sx={{ fontSize: 16 }} />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              </Stack>
+            </ListItemSecondaryAction>
+          </ListItemButton>
+        );
+      })}
 
-      <Button
-        startIcon={<ImageIcon />}
-        variant="outlined"
-        fullWidth
-        onClick={() => void openImage()}
-        sx={{ mt: 1 }}
-      >
-        Load floor image
-      </Button>
-    </Box>
+      {building.floors.length === 0 && (
+        <Box sx={{ px: 1, py: 0.5, fontSize: 12, color: 'text.disabled' }}>
+          No floors yet.
+        </Box>
+      )}
+    </List>
   );
 }
+
+/**
+ * Memoized: a mutation on one building re-renders only that building's list,
+ * which matters once a project holds many buildings and floors.
+ */
+export const FloorPanel = memo(FloorPanelBase);

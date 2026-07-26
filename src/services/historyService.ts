@@ -1,5 +1,5 @@
-import type { Floor, HistorySnapshot, SelectionState } from '@/models/types';
-import { cloneFloors } from './projectService';
+import type { Building, HistorySnapshot, SelectionState } from '@/models/types';
+import { cloneBuildings } from './buildingService';
 import { HISTORY_LIMIT } from '@/utils/constants';
 
 export interface HistoryState {
@@ -12,12 +12,14 @@ export function createEmptyHistory(): HistoryState {
 }
 
 export function createSnapshot(
-  floors: Floor[],
+  buildings: Building[],
+  activeBuildingId: number,
   activeFloorId: number,
   selection: SelectionState
 ): HistorySnapshot {
   return {
-    floors: cloneFloors(floors),
+    buildings: cloneBuildings(buildings),
+    activeBuildingId,
     activeFloorId,
     selection: {
       nodeIds: [...selection.nodeIds],

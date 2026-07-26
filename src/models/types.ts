@@ -1,4 +1,4 @@
-/** Node classification for hospital graph digitization. */
+/** Node classification for facility graph digitization. */
 export type NodeType =
   | 'NORMAL'
   | 'ROOM'
@@ -33,6 +33,15 @@ export interface CustomPropertySchema {
   options?: string[];
 }
 
+/**
+ * Free-form metadata bag carried by projects, buildings and floors.
+ *
+ * Nothing in the editor interprets these keys — they round-trip through
+ * save / load / export untouched so integrations and the JSON editor can
+ * attach arbitrary data without a schema change.
+ */
+export type Metadata = Record<string, unknown>;
+
 /** A graph vertex placed on a floor plan (pixel coordinates). */
 export interface GraphNode {
   id: string;
@@ -66,7 +75,10 @@ export interface GraphEdge {
   bidirectional: boolean;
 }
 
-/** One hospital floor with independent coordinate space (origin top-left). */
+/**
+ * One floor with an independent coordinate space (origin top-left).
+ * Belongs to exactly one building; `id` is unique across the whole project.
+ */
 export interface Floor {
   id: number;
   name: string;
@@ -80,37 +92,74 @@ export interface Floor {
   imageHeight: number;
   nodes: GraphNode[];
   edges: GraphEdge[];
+  /** Free-form, editor-agnostic data. */
+  metadata?: Metadata;
+}
+
+/** A building owning an ordered, unbounded collection of floors. */
+export interface Building {
+  id: number;
+  name: string;
+  description?: string;
+  floors: Floor[];
+  /** Free-form, editor-agnostic data. */
+  metadata?: Metadata;
+}
+
+/** Project-level metadata. Extra keys are preserved verbatim. */
+export interface ProjectMetadata {
+  hospitalName?: string;
+  description?: string;
+  [key: string]: unknown;
 }
 
 /** Full project document (.mapeditor). */
 export interface MapEditorProject {
-  version: 1;
+  version: 2;
   name: string;
   createdAt: string;
   updatedAt: string;
+  /** Building owning the active floor. */
+  activeBuildingId: number;
+  /** Active floor id (unique project-wide). */
   activeFloorId: number;
-  floors: Floor[];
-  /** Optional metadata for the backend consumer. */
-  metadata?: {
-    hospitalName?: string;
-    description?: string;
-  };
+  buildings: Building[];
+  metadata?: ProjectMetadata;
 }
 
 /** Export format consumed by pathfinding backends. */
 export interface ExportGraph {
+  buildings: ExportBuilding[];
+  /**
+   * Flat list of every floor across every building.
+   * Retained so consumers written against the single-building format keep
+   * working; floor ids are unique project-wide, so this stays unambiguous.
+   */
   floors: ExportFloor[];
+}
+
+export interface ExportBuilding {
+  id: number;
+  name: string;
+  description?: string;
+  floors: ExportFloor[];
+  metadata?: Metadata;
 }
 
 export interface ExportFloor {
   id: number;
+  /** Owning building id. */
+  building: number;
   image: string;
   nodes: ExportNode[];
   edges: ExportEdge[];
+  metadata?: Metadata;
 }
 
 export interface ExportNode {
   id: string;
+  /** Owning building id. */
+  building: number;
   floor: number;
   x: number;
   y: number;
@@ -144,7 +193,8 @@ export interface Viewport {
 
 /** Snapshot used by undo/redo. */
 export interface HistorySnapshot {
-  floors: Floor[];
+  buildings: Building[];
+  activeBuildingId: number;
   activeFloorId: number;
   selection: SelectionState;
 }

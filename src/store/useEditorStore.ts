@@ -1,24 +1,37 @@
 import { create } from 'zustand';
 import type {
+  Building,
   CustomPropertySchema,
   CustomPropertyType,
   EdgeType,
   EditorTool,
   Floor,
+  HistorySnapshot,
   MapEditorProject,
   NodeType,
   SelectionState,
   Viewport,
 } from '@/models/types';
 import {
+  addBuildingToProject,
   addFloorToProject,
-  cloneFloors,
   createEmptyProject,
+  duplicateBuildingInProject,
+  getActiveBuilding,
   getActiveFloor,
+  normalizeActive,
+  parseProject,
+  removeBuildingFromProject,
   removeFloorFromProject,
+  reorderBuildingInProject,
   reorderFloorInProject,
+  serializeProject,
+  setActiveBuildingInProject,
+  setActiveFloorInProject,
+  updateBuildingInProject,
   updateFloorInProject,
 } from '@/services/projectService';
+import { cloneBuildings, findFloorLocation } from '@/services/buildingService';
 import {
   addNodePropertyOnFloor,
   addNodeToFloor,
@@ -79,6 +92,7 @@ interface EditorState {
 
   // ── Derived helpers ──────────────────────────────────────────────────────
   getActiveFloor: () => Floor;
+  getActiveBuilding: () => Building;
   canUndo: () => boolean;
   canRedo: () => boolean;
 
@@ -114,13 +128,32 @@ interface EditorState {
   exportJson: () => Promise<void>;
   setProjectName: (name: string) => void;
   markClean: (path?: string | null) => void;
+  /** Serialize the live project for the JSON editor. */
+  getProjectJson: () => string;
+  /**
+   * Replace the whole project from edited JSON.
+   * Throws with a readable message when the document is invalid — the current
+   * project is left untouched in that case.
+   */
+  applyProjectJson: (json: string) => void;
+
+  // ── Buildings ────────────────────────────────────────────────────────────
+  setActiveBuilding: (buildingId: number) => void;
+  addBuilding: () => void;
+  removeBuilding: (buildingId: number) => void;
+  renameBuilding: (buildingId: number, name: string) => void;
+  setBuildingDescription: (buildingId: number, description: string) => void;
+  duplicateBuilding: (buildingId: number) => void;
+  /** Move a building within the list (`delta` of -1 / +1 = up / down). */
+  moveBuilding: (buildingId: number, delta: number) => void;
 
   // ── Floors ───────────────────────────────────────────────────────────────
   setActiveFloor: (floorId: number) => void;
-  addFloor: () => void;
+  /** Append a floor to a building (defaults to the active one). */
+  addFloor: (buildingId?: number) => void;
   removeFloor: (floorId: number) => void;
   renameFloor: (floorId: number, name: string) => void;
-  /** Move a floor within the floor list (`delta` of -1 / +1 = up / down). */
+  /** Move a floor within its own building (`delta` of -1 / +1 = up / down). */
   moveFloor: (floorId: number, delta: number) => void;
   openImageForActiveFloor: () => Promise<void>;
 
@@ -184,6 +217,19 @@ function emptySelection(): SelectionState {
   return { nodeIds: [], edgeIds: [] };
 }
 
+/** Restore floors/active pointers from an undo snapshot, keeping doc metadata. */
+function restoreSnapshot(
+  project: MapEditorProject,
+  snapshot: HistorySnapshot
+): MapEditorProject {
+  return normalizeActive({
+    ...project,
+    buildings: cloneBuildings(snapshot.buildings),
+    activeBuildingId: snapshot.activeBuildingId,
+    activeFloorId: snapshot.activeFloorId,
+  });
+}
+
 export const useEditorStore = create<EditorState>((set, get) => ({
   project: createEmptyProject(),
   projectPath: null,
@@ -201,6 +247,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   isPanning: false,
 
   getActiveFloor: () => getActiveFloor(get().project),
+  getActiveBuilding: () => getActiveBuilding(get().project),
   canUndo: () => canUndo(get().history),
   canRedo: () => canRedo(get().history),
 
@@ -290,7 +337,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   commitHistory: () => {
     const { project, selection, history } = get();
     const snapshot = createSnapshot(
-      project.floors,
+      project.buildings,
+      project.activeBuildingId,
       project.activeFloorId,
       selection
     );
@@ -300,7 +348,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   undo: () => {
     const { history, project, selection } = get();
     const current = createSnapshot(
-      project.floors,
+      project.buildings,
+      project.activeBuildingId,
       project.activeFloorId,
       selection
     );
@@ -308,11 +357,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     if (!result) return;
     set({
       history: result.history,
-      project: {
-        ...project,
-        floors: cloneFloors(result.snapshot.floors),
-        activeFloorId: result.snapshot.activeFloorId,
-      },
+      project: restoreSnapshot(project, result.snapshot),
       selection: result.snapshot.selection,
       isDirty: true,
       edgeDraftFromId: null,
@@ -323,7 +368,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   redo: () => {
     const { history, project, selection } = get();
     const current = createSnapshot(
-      project.floors,
+      project.buildings,
+      project.activeBuildingId,
       project.activeFloorId,
       selection
     );
@@ -331,11 +377,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     if (!result) return;
     set({
       history: result.history,
-      project: {
-        ...project,
-        floors: cloneFloors(result.snapshot.floors),
-        activeFloorId: result.snapshot.activeFloorId,
-      },
+      project: restoreSnapshot(project, result.snapshot),
       selection: result.snapshot.selection,
       isDirty: true,
       edgeDraftFromId: null,
@@ -456,25 +498,169 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       projectPath: path !== undefined ? path : s.projectPath,
     })),
 
-  setActiveFloor: (floorId) => {
+  getProjectJson: () => serializeProject(get().project),
+
+  applyProjectJson: (json) => {
+    // Parse first: an invalid document must never touch the live project.
+    let next: MapEditorProject;
+    try {
+      next = parseProject(json);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Invalid project JSON.';
+      set({ status: { message, severity: 'error' } });
+      throw new Error(message);
+    }
+
+    // Undo/redo survives: the pre-edit state goes on the stack like any
+    // other mutation, so Ctrl+Z steps back out of the JSON edit.
+    get().commitHistory();
+    set({
+      project: next,
+      isDirty: true,
+      selection: emptySelection(),
+      edgeDraftFromId: null,
+      status: { message: 'Project JSON applied.', severity: 'success' },
+    });
+    setTimeout(() => get().fitToScreen(), 30);
+  },
+
+  setActiveBuilding: (buildingId) => {
     set((s) => ({
-      project: { ...s.project, activeFloorId: floorId },
+      project: setActiveBuildingInProject(s.project, buildingId),
       selection: emptySelection(),
       edgeDraftFromId: null,
     }));
     setTimeout(() => get().fitToScreen(), 30);
   },
 
-  addFloor: () => {
+  addBuilding: () => {
+    get().commitHistory();
+    const project = addBuildingToProject(get().project);
+    set({
+      project,
+      isDirty: true,
+      selection: emptySelection(),
+      status: {
+        message: `Added ${
+          project.buildings[project.buildings.length - 1].name
+        }`,
+        severity: 'success',
+      },
+    });
+  },
+
+  removeBuilding: (buildingId) => {
+    const { project } = get();
+    const target = project.buildings.find((b) => b.id === buildingId);
+    if (!target) return;
+    if (project.buildings.length <= 1) {
+      set({
+        status: {
+          message: 'At least one building is required.',
+          severity: 'error',
+        },
+      });
+      return;
+    }
+
+    get().commitHistory();
+    set({
+      project: removeBuildingFromProject(project, buildingId),
+      isDirty: true,
+      selection: emptySelection(),
+      status: { message: `Removed ${target.name}`, severity: 'info' },
+    });
+  },
+
+  renameBuilding: (buildingId, name) => {
+    get().commitHistory();
+    set((s) => ({
+      project: updateBuildingInProject(s.project, buildingId, (b) => ({
+        ...b,
+        name,
+      })),
+      isDirty: true,
+    }));
+  },
+
+  setBuildingDescription: (buildingId, description) => {
+    get().commitHistory();
+    set((s) => ({
+      project: updateBuildingInProject(s.project, buildingId, (b) => ({
+        ...b,
+        description,
+      })),
+      isDirty: true,
+    }));
+  },
+
+  duplicateBuilding: (buildingId) => {
     try {
       get().commitHistory();
-      const project = addFloorToProject(get().project);
+      const project = duplicateBuildingInProject(get().project, buildingId);
       set({
         project,
         isDirty: true,
         selection: emptySelection(),
         status: {
-          message: `Added ${project.floors.find((f) => f.id === project.activeFloorId)?.name}`,
+          message: `Duplicated to ${
+            project.buildings.find((b) => b.id === project.activeBuildingId)
+              ?.name
+          }`,
+          severity: 'success',
+        },
+      });
+      setTimeout(() => get().fitToScreen(), 30);
+    } catch (err) {
+      set({
+        status: {
+          message:
+            err instanceof Error ? err.message : 'Cannot duplicate building',
+          severity: 'error',
+        },
+      });
+    }
+  },
+
+  moveBuilding: (buildingId, delta) => {
+    const { project } = get();
+    const index = project.buildings.findIndex((b) => b.id === buildingId);
+    if (index === -1) return;
+
+    // Validate before committing history so no-op moves cannot pollute undo.
+    const target = index + delta;
+    if (target < 0 || target >= project.buildings.length || target === index) {
+      return;
+    }
+
+    get().commitHistory();
+    set({
+      project: reorderBuildingInProject(project, buildingId, target),
+      isDirty: true,
+    });
+  },
+
+  setActiveFloor: (floorId) => {
+    set((s) => ({
+      project: setActiveFloorInProject(s.project, floorId),
+      selection: emptySelection(),
+      edgeDraftFromId: null,
+    }));
+    setTimeout(() => get().fitToScreen(), 30);
+  },
+
+  addFloor: (buildingId) => {
+    try {
+      const targetId = buildingId ?? get().project.activeBuildingId;
+      get().commitHistory();
+      const project = addFloorToProject(get().project, targetId);
+      set({
+        project,
+        isDirty: true,
+        selection: emptySelection(),
+        status: {
+          message: `Added ${getActiveFloor(project).name}`,
           severity: 'success',
         },
       });
@@ -490,7 +676,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   removeFloor: (floorId) => {
     try {
-      const name = get().project.floors.find((f) => f.id === floorId)?.name;
+      const name = findFloorLocation(get().project.buildings, floorId)?.floor
+        .name;
       get().commitHistory();
       const project = removeFloorFromProject(get().project, floorId);
       set({
@@ -525,12 +712,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   moveFloor: (floorId, delta) => {
     const { project } = get();
-    const index = project.floors.findIndex((f) => f.id === floorId);
-    if (index === -1) return;
+    const location = findFloorLocation(project.buildings, floorId);
+    if (!location) return;
+
+    // Floors reorder within their own building only.
+    const siblings = location.building.floors;
+    const index = siblings.findIndex((f) => f.id === floorId);
 
     // Validate before committing history so no-op moves cannot pollute undo.
     const target = index + delta;
-    if (target < 0 || target >= project.floors.length || target === index) {
+    if (target < 0 || target >= siblings.length || target === index) {
       return;
     }
 
@@ -672,13 +863,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const edgeDraftFromId =
         s.edgeDraftFromId === oldId ? trimmed : s.edgeDraftFromId;
       return {
-        project: {
-          ...s.project,
-          floors: s.project.floors.map((f) =>
-            f.id === floorId ? nextFloor : f
-          ),
-          updatedAt: new Date().toISOString(),
-        },
+        project: updateFloorInProject(s.project, floorId, () => nextFloor),
         selection,
         edgeDraftFromId,
         isDirty: true,

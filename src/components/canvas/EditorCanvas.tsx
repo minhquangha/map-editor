@@ -17,6 +17,7 @@ import {
   findNodeAt,
   getNodesInRect,
 } from '@/services/graphService';
+import { getActiveFloor } from '@/services/projectService';
 import { screenToWorld, zoomAtPoint } from '@/utils/geometry';
 import { WHEEL_ZOOM_SENSITIVITY } from '@/utils/constants';
 
@@ -71,10 +72,7 @@ export function EditorCanvas() {
   const moveNodesLive = useEditorStore((s) => s.moveNodesLive);
   const setStatus = useEditorStore((s) => s.setStatus);
 
-  const floor = useMemo(
-    () => project.floors.find((f) => f.id === project.activeFloorId)!,
-    [project]
-  );
+  const floor = useMemo(() => getActiveFloor(project), [project]);
 
   const selectedNodeIds = useMemo(
     () => new Set(selection.nodeIds),

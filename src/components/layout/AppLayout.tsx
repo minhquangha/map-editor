@@ -1,11 +1,11 @@
 import { Box, Paper } from '@mui/material';
 import { Toolbar } from './Toolbar';
 import { StatusBar } from './StatusBar';
-import { FloorPanel } from '@/components/panels/FloorPanel';
+import { BuildingPanel } from '@/components/panels/BuildingPanel';
 import { PropertiesPanel } from '@/components/panels/PropertiesPanel';
 import { EditorCanvas } from '@/components/canvas/EditorCanvas';
 
-const LEFT_PANEL_WIDTH = 260;
+const LEFT_PANEL_WIDTH = 300;
 const RIGHT_PANEL_WIDTH = 280;
 
 export function AppLayout() {
@@ -23,7 +23,7 @@ export function AppLayout() {
       <Toolbar />
 
       <Box sx={{ flex: 1, display: 'flex', minHeight: 0 }}>
-        {/* Left dock — floors / project */}
+        {/* Left dock — project tree (buildings → floors) */}
         <Paper
           elevation={0}
           square
@@ -37,7 +37,7 @@ export function AppLayout() {
             overflow: 'hidden',
           }}
         >
-          <FloorPanel />
+          <BuildingPanel />
         </Paper>
 
         {/* Center — canvas */}

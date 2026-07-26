@@ -30,11 +30,15 @@ import ZoomInIcon from '@mui/icons-material/ZoomIn';
 import ZoomOutIcon from '@mui/icons-material/ZoomOut';
 import LabelIcon from '@mui/icons-material/Label';
 import StraightenIcon from '@mui/icons-material/Straighten';
+import DataObjectIcon from '@mui/icons-material/DataObject';
+import { useState } from 'react';
 import { useEditorStore } from '@/store/useEditorStore';
+import { JsonEditorDialog } from '@/components/panels/JsonEditorDialog';
 import type { EditorTool, NodeType } from '@/models/types';
 import { NODE_TYPE_OPTIONS } from '@/utils/constants';
 
 export function Toolbar() {
+  const [jsonOpen, setJsonOpen] = useState(false);
   const tool = useEditorStore((s) => s.tool);
   const defaultNodeType = useEditorStore((s) => s.defaultNodeType);
   const project = useEditorStore((s) => s.project);
@@ -120,6 +124,11 @@ export function Toolbar() {
           <Tooltip title="Export graph JSON (Ctrl+E)">
             <IconButton onClick={() => void exportJson()}>
               <FileDownloadIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Edit project JSON">
+            <IconButton onClick={() => setJsonOpen(true)}>
+              <DataObjectIcon fontSize="small" />
             </IconButton>
           </Tooltip>
         </Stack>
@@ -256,6 +265,8 @@ export function Toolbar() {
           </Tooltip>
         </Stack>
       </MuiToolbar>
+
+      <JsonEditorDialog open={jsonOpen} onClose={() => setJsonOpen(false)} />
     </AppBar>
   );
 }

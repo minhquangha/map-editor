@@ -23,6 +23,7 @@ import type {
   NodeType,
 } from '@/models/types';
 import { validateNodeId } from '@/services/graphService';
+import { getActiveFloor } from '@/services/projectService';
 import { EDGE_TYPE_OPTIONS, NODE_TYPE_OPTIONS } from '@/utils/constants';
 import { CustomPropertiesSection } from './CustomPropertiesSection';
 
@@ -39,7 +40,7 @@ export function PropertiesPanel() {
   const setNodePropertySchema = useEditorStore((s) => s.setNodePropertySchema);
 
   const floor = useMemo(
-    () => project.floors.find((f) => f.id === project.activeFloorId)!,
+    () => getActiveFloor(project),
     [project]
   );
 

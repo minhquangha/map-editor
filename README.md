@@ -14,13 +14,32 @@ This is **not** an indoor navigation client. Its only job is to produce clean gr
 | **Canvas** | Infinite canvas, zoom (wheel / Ctrl+wheel), pan (middle mouse, Space, Pan tool), fit to screen |
 | **Nodes** | Create, move, delete, rename, multi-select · types: NORMAL, ROOM, ELEVATOR, STAIR, ENTRANCE, EXIT |
 | **Edges** | Connect two nodes · Euclidean distance · NORMAL / STAIR / ELEVATOR · bi-directional or one-way |
-| **Floors** | Unlimited independent floors — add, rename, delete, reorder · each with own image, nodes, edges, origin (0,0) top-left |
+| **Buildings** | Unlimited buildings — add, rename, describe, duplicate, delete, reorder |
+| **Floors** | Unlimited floors per building — add, rename, delete, reorder · each with own image, nodes, edges, origin (0,0) top-left |
 | **Project** | `.mapeditor` format · open / save / save as · auto-save |
+| **JSON editor** | Edit the whole project document in-app · syntax validation, error jump, format, apply / cancel |
 | **Export** | Graph JSON for pathfinding backends |
 | **UX** | Dark mode, dock panels, undo/redo, keyboard shortcuts |
 | **Performance** | Designed for ~5 000 nodes / 10 000 edges |
 
 When a node moves, **all connected edge distances update automatically**.
+
+Project hierarchy:
+
+```
+Project
+├── Buildings
+│   ├── Building A
+│   │   ├── Floor 1   (image · nodes · edges · metadata)
+│   │   └── Floor 2
+│   └── Building B
+│       └── Floor 1
+└── Metadata
+```
+
+Nodes and edges are scoped to a floor. Floor ids are unique across the whole
+project, so a floor is addressable on its own regardless of which building
+owns it.
 
 ---
 
@@ -42,11 +61,11 @@ When a node moves, **all connected edge distances update automatically**.
 map_editor/
 ├── electron/           # Main process + preload (IPC)
 ├── src/
-│   ├── components/     # UI (layout, canvas, panels)
+│   ├── components/     # UI (layout, canvas, panels, JSON editor)
 │   ├── hooks/          # Shortcuts, autosave, menu bridge
 │   ├── models/         # Domain types
 │   ├── pages/          # Editor page
-│   ├── services/       # Graph, project, export, history, files
+│   ├── services/       # Graph, building, project, export, history, files
 │   ├── store/          # Zustand store
 │   ├── theme/          # MUI dark theme
 │   └── utils/          # Geometry, ids, constants
@@ -120,13 +139,14 @@ npm run electron:build:dir
 ## Workflow
 
 1. **New project** (or open `.mapeditor`)
-2. **Load floor plan image** (PNG/JPG) for Floor 1
-3. **Add Node** tool — click on corridors / rooms
-4. Set node **type** and **label** in the properties panel
-5. **Add Edge** tool — click node A, then node B
-6. Distances are calculated automatically (pixel Euclidean)
-7. Add / switch floors in the Floors panel, repeat
-8. **Save** project · **Export JSON** for the pathfinding backend
+2. Add **buildings** in the left panel; each starts with one floor
+3. **Load floor plan image** (PNG/JPG) for the selected floor
+4. **Add Node** tool — click on corridors / rooms
+5. Set node **type** and **label** in the properties panel
+6. **Add Edge** tool — click node A, then node B
+7. Distances are calculated automatically (pixel Euclidean)
+8. Add / switch floors and buildings in the left panel, repeat
+9. **Save** project · **Export JSON** for the pathfinding backend
 
 ---
 
@@ -161,45 +181,83 @@ Custom JSON document embedding floor images as data URLs:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "name": "Hospital A",
   "createdAt": "...",
   "updatedAt": "...",
+  "activeBuildingId": 1,
   "activeFloorId": 1,
-  "floors": [
+  "buildings": [
     {
       "id": 1,
-      "name": "Floor 1",
-      "imageName": "floor1.png",
-      "imageDataUrl": "data:image/png;base64,...",
-      "imageWidth": 2400,
-      "imageHeight": 1800,
-      "nodes": [
+      "name": "Main Building",
+      "description": "Outpatient wing",
+      "metadata": {},
+      "floors": [
         {
-          "id": "n_abc123",
-          "floor": 1,
-          "x": 120.5,
-          "y": 340.0,
-          "label": "ER Waiting",
-          "type": "ROOM"
-        }
-      ],
-      "edges": [
-        {
-          "id": "e_def456",
-          "from": "n_abc123",
-          "to": "n_xyz789",
-          "distance": 85.42,
-          "edgeType": "NORMAL",
-          "bidirectional": true
+          "id": 1,
+          "name": "Floor 1",
+          "imageName": "floor1.png",
+          "imageDataUrl": "data:image/png;base64,...",
+          "imageWidth": 2400,
+          "imageHeight": 1800,
+          "metadata": {},
+          "nodes": [
+            {
+              "id": "n_abc123",
+              "floor": 1,
+              "x": 120.5,
+              "y": 340.0,
+              "label": "ER Waiting",
+              "type": "ROOM",
+              "room_type": "Emergency",
+              "properties": { "capacity": 12 },
+              "propertySchema": { "capacity": { "type": "number" } }
+            }
+          ],
+          "edges": [
+            {
+              "id": "e_def456",
+              "from": "n_abc123",
+              "to": "n_xyz789",
+              "distance": 85.42,
+              "edgeType": "NORMAL",
+              "bidirectional": true
+            }
+          ]
         }
       ]
     }
-  ]
+  ],
+  "metadata": {}
 }
 ```
 
 Coordinates are **image pixels**, origin **(0,0) top-left**, independent per floor.
+
+**Version 1 files still open.** A v1 document stores floors directly on the
+project; on load every floor is moved into a default building named
+`Main Building`, ids are left untouched, and nothing is dropped.
+
+**Unknown fields are preserved.** Any key the editor does not recognise — on
+the project, a building, a floor, a node or an edge — round-trips through
+save / load and through the JSON editor untouched.
+
+---
+
+## Project JSON editor
+
+The toolbar's `{ }` button opens the whole project document for editing.
+
+- Live syntax validation with line/column reporting and **Jump to error**
+- **Format** re-indents the document
+- **Apply Changes** replaces the project; **Cancel** discards
+- Invalid JSON can never be applied, so the open project is never corrupted
+- Applying pushes an undo entry — `Ctrl+Z` steps back out of a JSON edit
+
+Beyond syntax, the document must satisfy the project invariants: building ids
+unique, floor ids unique across all buildings, and every building holding at
+least one floor. Violations are reported and the edit is kept open.
 
 ---
 
@@ -207,42 +265,60 @@ Coordinates are **image pixels**, origin **(0,0) top-left**, independent per flo
 
 ```json
 {
-  "floors": [
+  "buildings": [
     {
       "id": 1,
-      "image": "floor1.png",
-      "nodes": [
+      "name": "Main Building",
+      "description": "Outpatient wing",
+      "floors": [
         {
-          "id": "n_abc123",
-          "floor": 1,
-          "x": 120.5,
-          "y": 340.0,
-          "label": "ER Waiting",
-          "type": "ROOM"
-        }
-      ],
-      "edges": [
-        {
-          "from": "n_abc123",
-          "to": "n_xyz789",
-          "distance": 85.42,
-          "edgeType": "NORMAL",
-          "bidirectional": true
+          "id": 1,
+          "building": 1,
+          "image": "floor1.png",
+          "nodes": [
+            {
+              "id": "n_abc123",
+              "building": 1,
+              "floor": 1,
+              "x": 120.5,
+              "y": 340.0,
+              "label": "ER Waiting",
+              "type": "ROOM",
+              "room_type": "Emergency",
+              "properties": { "capacity": 12 }
+            }
+          ],
+          "edges": [
+            {
+              "from": "n_abc123",
+              "to": "n_xyz789",
+              "distance": 85.42,
+              "edgeType": "NORMAL",
+              "bidirectional": true
+            }
+          ]
         }
       ]
     }
-  ]
+  ],
+  "floors": [ "…every floor across every building, same objects as above…" ]
 }
 ```
 
 Feed this into your backend pathfinding service (Dijkstra / A\*).
 
+The top-level `floors` array is a **flat mirror** of every floor in the
+project, kept so consumers written against the previous single-building export
+keep working unchanged. Floor ids are unique project-wide, so the flat view is
+never ambiguous. New consumers should read `buildings` and can ignore `floors`.
+
 ---
 
 ## Architecture notes
 
-- **Clean separation**: graph mutations live in `services/graphService.ts`; the Zustand store orchestrates UI state + history.
-- **History**: snapshots of floors + selection for undo/redo (limit 100).
+- **Clean separation**: graph mutations (nodes/edges on a floor) live in `services/graphService.ts`; building and floor structure lives in `services/buildingService.ts`; document concerns (create / clone / serialize / parse / migrate) live in `services/projectService.ts`. The Zustand store orchestrates UI state + history.
+- **Layering**: `buildingService` knows nothing about the project document, and `graphService` knows nothing about buildings — so a floor's graph logic is untouched by the hierarchy above it.
+- **History**: snapshots of buildings + active building/floor + selection for undo/redo (limit 100).
 - **Auto-save**: every 30s to disk (when path known) + `localStorage` recovery snapshot.
 - **Canvas**: Konva Layer transform for pan/zoom; hit-testing in world (pixel) space.
 

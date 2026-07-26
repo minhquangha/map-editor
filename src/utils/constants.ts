@@ -2,10 +2,15 @@ import type { EdgeType, NodeType } from '@/models/types';
 
 export const APP_NAME = 'Map Editor';
 export const PROJECT_EXTENSION = 'mapeditor';
-export const PROJECT_VERSION = 1 as const;
+export const PROJECT_VERSION = 2 as const;
+/** Oldest `.mapeditor` version this build can still open (single-building). */
+export const MIN_SUPPORTED_PROJECT_VERSION = 1;
 
-/** Lowest valid floor id. Floor count is unlimited. */
+/** Lowest valid floor id. Floor and building counts are unlimited. */
 export const MIN_FLOOR = 1;
+export const MIN_BUILDING = 1;
+
+export const DEFAULT_BUILDING_NAME = 'Main Building';
 
 export const NODE_RADIUS = 8;
 export const NODE_HIT_RADIUS = 12;
@@ -54,6 +59,12 @@ export const SELECTION_COLOR = '#ffeb3b';
 export const HOVER_COLOR = '#ffffff';
 export const PREVIEW_EDGE_COLOR = '#ff9800';
 
-export function defaultFloorName(id: number): string {
-  return `Floor ${id}`;
+/** Name for a new floor, based on its 1-based position inside its building. */
+export function defaultFloorName(position: number): string {
+  return `Floor ${position}`;
+}
+
+/** Name for a new building, based on its 1-based position in the project. */
+export function defaultBuildingName(position: number): string {
+  return `Building ${position}`;
 }

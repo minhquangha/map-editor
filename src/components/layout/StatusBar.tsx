@@ -2,6 +2,7 @@ import { Box, Chip, Typography } from '@mui/material';
 import { useMemo } from 'react';
 import { useEditorStore } from '@/store/useEditorStore';
 import { getProjectStats } from '@/services/exportService';
+import { getActiveBuilding, getActiveFloor } from '@/services/projectService';
 
 export function StatusBar() {
   const project = useEditorStore((s) => s.project);
@@ -12,10 +13,8 @@ export function StatusBar() {
   const isDirty = useEditorStore((s) => s.isDirty);
   const projectPath = useEditorStore((s) => s.projectPath);
 
-  const floor = useMemo(
-    () => project.floors.find((f) => f.id === project.activeFloorId)!,
-    [project]
-  );
+  const building = useMemo(() => getActiveBuilding(project), [project]);
+  const floor = useMemo(() => getActiveFloor(project), [project]);
 
   const stats = useMemo(() => getProjectStats(project), [project]);
 
@@ -51,7 +50,7 @@ export function StatusBar() {
       />
 
       <Typography variant="caption" color="text.secondary">
-        {floor.name}
+        {building.name} · {floor.name}
         {floor.imageWidth > 0 && ` · ${floor.imageWidth}×${floor.imageHeight}px`}
       </Typography>
 
@@ -60,7 +59,8 @@ export function StatusBar() {
       </Typography>
 
       <Typography variant="caption" color="text.secondary">
-        Project {stats.nodes}n / {stats.edges}e · {stats.floors} floors
+        Project {stats.nodes}n / {stats.edges}e · {stats.buildings} bld /{' '}
+        {stats.floors} floors
       </Typography>
 
       {(selection.nodeIds.length > 0 || selection.edgeIds.length > 0) && (
